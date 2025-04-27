@@ -1,0 +1,1 @@
+python -m train --output-dir output --dataset coco --epochs 20 --aspect-ratio-group-factor 3 --lr-scheduler cosineannealinglr --lr 0.15 --batch-size 3 --weight-decay 0.00004 --data-augmentation ssdlite
