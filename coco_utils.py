@@ -307,7 +307,7 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
         formatted_target['iscrowd'] = torch.as_tensor(iscrowd, dtype=torch.uint8)
 
         if self.transforms is not None:
-             image = self.transforms(image)
+             image = self.transforms(image, target)
 
         return image, formatted_target
 
