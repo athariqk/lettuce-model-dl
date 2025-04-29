@@ -26,7 +26,7 @@ def get_dataset(is_train, args):
     }
     p, ds_fn, num_classes = paths[args.dataset]
 
-    ds = ds_fn(p, image_set=image_set, transforms=get_transform(is_train, args))
+    ds = ds_fn(p, image_set=image_set, transforms=get_transform(is_train, args), use_v2=args.use_v2)
     return ds, num_classes
 
 def get_transform(is_train, args):

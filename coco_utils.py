@@ -203,19 +203,6 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         return img, target
 
 
-class CocoDetection(torchvision.datasets.CocoDetection):
-    def __init__(self, img_folder, ann_file, transforms):
-        super(CocoDetection, self).__init__(img_folder, ann_file)
-        self._transforms = transforms
-
-    def __getitem__(self, idx):
-        img, target = super(CocoDetection, self).__getitem__(idx)
-        image_id = self.ids[idx]
-        target = dict(image_id=image_id, annotations=target)
-        if self._transforms is not None:
-            img, target = self._transforms(img, target)
-        return img, target
-
 class CocoOnlineDataset(torchvision.datasets.CocoDetection):
     """
     A custom PyTorch Dataset inheriting from CocoDetection that loads images from URLs
@@ -255,7 +242,7 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
 
         return image, target
 
-def get_coco(root, image_set, transforms, mode='instances'):
+def get_coco(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False):
     anno_file_template = "{}_{}2017.json"
     PATHS = {
         "train": ("train2017", os.path.join("annotations", anno_file_template.format(mode, "train"))),
@@ -263,17 +250,26 @@ def get_coco(root, image_set, transforms, mode='instances'):
         # "train": ("val2017", os.path.join("annotations", anno_file_template.format(mode, "val")))
     }
 
-    t = [ConvertCocoPolysToMask()]
-
-    if transforms is not None:
-        t.append(transforms)
-    transforms = T.Compose(t)
-
     img_folder, ann_file = PATHS[image_set]
     img_folder = os.path.join(root, img_folder)
     ann_file = os.path.join(root, ann_file)
 
-    dataset = CocoDetection(img_folder, ann_file, transforms=transforms)
+    if use_v2:
+        from torchvision.datasets import wrap_dataset_for_transforms_v2
+
+        dataset = torchvision.datasets.CocoDetection(img_folder, ann_file, transforms=transforms)
+        target_keys = ["boxes", "labels", "image_id"]
+        if with_masks:
+            target_keys += ["masks"]
+        dataset = wrap_dataset_for_transforms_v2(dataset, target_keys=target_keys)
+    else:
+        # TODO: handle with_masks for V1?
+        t = [ConvertCocoPolysToMask()]
+        if transforms is not None:
+            t.append(transforms)
+        transforms = T.Compose(t)
+
+        dataset = CocoDetection(img_folder, ann_file, transforms=transforms)
 
     if image_set == "train":
         dataset = _coco_remove_images_without_annotations(dataset)
@@ -282,11 +278,7 @@ def get_coco(root, image_set, transforms, mode='instances'):
 
     return dataset
 
-
-def get_coco_kp(root, image_set, transforms):
-    return get_coco(root, image_set, transforms, mode="person_keypoints")
-
-def get_coco_online(root, image_set, transforms, mode='instances'):
+def get_coco_online(root, image_set, transforms, mode='instances', use_v2=False, with_masks=False):
     anno_file_template = "{}_{}2017.json"
     PATHS = {
         "train": os.path.join("annotations", anno_file_template.format(mode, "train")),
@@ -294,17 +286,30 @@ def get_coco_online(root, image_set, transforms, mode='instances'):
         # "train": ("val2017", os.path.join("annotations", anno_file_template.format(mode, "val")))
     }
 
-    t = [ConvertCocoPolysToMask()]
+    ann_file = PATHS[image_set]
+    ann_file = os.path.join(root, ann_file)
 
-    if transforms is not None:
-        t.append(transforms)
-    transforms = T.Compose(t)
+    if use_v2:
+        from torchvision.datasets import wrap_dataset_for_transforms_v2
 
-    ann_file = os.path.join(root, PATHS[image_set])
+        dataset = CocoOnlineDataset(None, ann_file, transforms=transforms)
+        target_keys = ["boxes", "labels", "image_id"]
+        if with_masks:
+            target_keys += ["masks"]
+        # won't work
+        dataset = wrap_dataset_for_transforms_v2(dataset, target_keys=target_keys)
+    else:
+        # TODO: handle with_masks for V1?
+        t = [ConvertCocoPolysToMask()]
+        if transforms is not None:
+            t.append(transforms)
+        transforms = T.Compose(t)
 
-    dataset = CocoOnlineDataset(None, ann_file=ann_file, transforms=transforms)
+        dataset = CocoOnlineDataset(None, ann_file, transforms=transforms)
 
     if image_set == "train":
         dataset = _coco_remove_images_without_annotations(dataset)
+
+    # dataset = torch.utils.data.Subset(dataset, [i for i in range(500)])
 
     return dataset
