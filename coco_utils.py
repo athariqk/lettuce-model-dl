@@ -275,59 +275,15 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
             image = Image.open(BytesIO(response.content)).convert('RGB')
         except requests.exceptions.RequestException as e:
             print(f"Error fetching image from {img_url}: {e}")
-            # Handle the error - returning None might cause issues with DataLoader.
-            # A more robust approach might be to retry, skip, or raise a custom error.
-            # For now, we'll return None and rely on a custom collate_fn to handle this.
             return None, None
         except Exception as e:
              print(f"Error processing image from {img_url}: {e}")
              return None, None
 
-        # --- Get Annotations and Format Target ---
-        # The parent CocoDetection class handles loading and formatting annotations.
-        # We can get the annotations for this image ID using self.coco
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
         annotations = self.coco.loadAnns(ann_ids)
 
-        # The parent CocoDetection also has a method to prepare the target.
-        # We can call the parent's __getitem__ to get the formatted target,
-        # but since we've already loaded the image, we'll manually format
-        # the target here to match the parent's expected output format.
-        # This manual formatting mirrors what CocoDetection does internally.
         target = annotations # Start with the list of annotation dictionaries
-
-        # Apply transformations (including target_transform if provided)
-        # Note: CocoDetection's transform/target_transform/transforms handle
-        # applying transformations to both image and target if specified.
-        # If you use the 'transforms' argument, it should be a callable that
-        # takes (image, target) and returns (transformed_image, transformed_target).
-        # If you use 'transform' and 'target_transform', they are applied separately.
-
-        # If using the combined 'transforms' callable
-        if self.transforms is not None:
-             image, target = self.transforms(image, target)
-        # If using separate 'transform' and 'target_transform'
-        elif self.transform is not None or self.target_transform is not None:
-            if self.transform is not None:
-                image = self.transform(image)
-            if self.target_transform is not None:
-                target = self.target_transform(target)
-        # Note: The default CocoDetection __getitem__ formats the target dictionary
-        # *before* applying transforms. If your transforms expect the dictionary
-        # format, you might need to adjust the order here or use the 'transforms'
-        # argument which is designed for this. Let's keep the target as the list
-        # of dictionaries for now, as that's what CocoDetection's target_transform
-        # would receive, and the combined 'transforms' would receive (image, list_of_dicts).
-
-        # If you need the target in the tensor dictionary format immediately after loading
-        # and before transforms, you would need to implement that formatting here.
-        # However, letting the parent's structure handle it via target_transform
-        # or combined transforms is generally better practice when inheriting.
-        # For compatibility with common detection model training loops, the target
-        # is usually expected as a dictionary of tensors (boxes, labels, etc.).
-        # Let's add the conversion to the tensor dictionary format here for clarity,
-        # assuming transforms are applied *after* this conversion, or that the
-        # 'transforms' callable handles the tensor dictionary format.
 
         # Convert list of annotation dicts to tensor dict format
         formatted_target = {}
@@ -339,8 +295,6 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
         iscrowd = []
 
         for ann in annotations:
-            # COCO bounding box format is [x, y, width, height]
-            # Convert to [x1, y1, x2, y2]
             x, y, w, h = ann['bbox']
             boxes.append([x, y, x + w, y + h])
             labels.append(ann['category_id'])
@@ -352,15 +306,8 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
         formatted_target['area'] = torch.as_tensor(area, dtype=torch.float32)
         formatted_target['iscrowd'] = torch.as_tensor(iscrowd, dtype=torch.uint8)
 
-        # Apply transformations if using the old style (transform/target_transform)
-        # Note: If you used the 'transforms' argument in __init__, it would have
-        # been applied already. This section is for compatibility if you pass
-        # transform and target_transform separately.
-        if self.transform is not None and self.transforms is None:
-             image = self.transform(image)
-        if self.target_transform is not None and self.transforms is None:
-             formatted_target = self.target_transform(formatted_target)
-
+        if self.transforms is not None:
+             image = self.transforms(image)
 
         return image, formatted_target
 
