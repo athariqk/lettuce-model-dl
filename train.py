@@ -148,6 +148,8 @@ def get_args_parser(add_help=True):
 
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
+    
+    parser.add_argument("--saved-weights", default=None, type=str, help="the saved weights file path to load")
 
     return parser
 
@@ -202,12 +204,12 @@ def main(args):
 
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_sampler=train_batch_sampler, num_workers=args.workers,
-        collate_fn=utils.collate_fn)
+        collate_fn=train_collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test, batch_size=1,
         sampler=test_sampler, num_workers=args.workers,
-        collate_fn=utils.collate_fn)
+        collate_fn=train_collate_fn)
 
     print("Creating model")
     kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers}
@@ -219,6 +221,11 @@ def main(args):
 
     # ONLY ONE MODEL SUPPORTED
     model = ssdlite_mobilevit(num_classes=num_classes, **kwargs)
+    
+    if args.saved_weights:
+        print("Loading saved weights: {}".format(args.saved_weights))
+        weights = torch.load(args.saved_weights, weights_only=False)["model"]
+        model.load_state_dict(weights)
 
     model.to(device)
     if args.distributed and args.sync_bn:
@@ -263,7 +270,7 @@ def main(args):
         )
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=True)
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model_without_ddp.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
