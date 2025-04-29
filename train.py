@@ -154,8 +154,8 @@ def get_args_parser(add_help=True):
 def main(args):
     if args.backend.lower() == "tv_tensor" and not args.use_v2:
         raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
-    if args.dataset not in ("coco", "coco_kp"):
-        raise ValueError(f"Dataset should be coco or coco_kp, got {args.dataset}")
+    if args.dataset not in ("coco", "coco_kp", "coco_online"):
+        raise ValueError(f"Dataset should be coco, coco_kp or coco_online, got {args.dataset}")
     if "keypoint" in args.model and args.dataset != "coco_kp":
         raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")
     if args.dataset == "coco_kp" and args.use_v2:
