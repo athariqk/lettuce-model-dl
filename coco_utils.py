@@ -285,6 +285,9 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
         
         target = dict(image_id=img_id, annotations=annotations)
 
+        if self.transforms is not None:
+             image = self.transforms(image, target)
+
         return image, target
 
 def get_coco(root, image_set, transforms, mode='instances'):
