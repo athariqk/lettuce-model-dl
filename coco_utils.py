@@ -278,6 +278,9 @@ def get_coco(root, image_set, transforms, mode="instances", use_v2=False, with_m
 
     return dataset
 
+def get_coco_kp(root, image_set, transforms, use_v2=False):
+    return get_coco(root, image_set, transforms, mode="person_keypoints", use_v2=use_v2)
+
 def get_coco_online(root, image_set, transforms, mode='instances', use_v2=False, with_masks=False):
     anno_file_template = "{}_{}2017.json"
     PATHS = {
