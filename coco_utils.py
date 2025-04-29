@@ -292,23 +292,12 @@ def get_coco_online(root, image_set, transforms, mode='instances', use_v2=False,
     ann_file = PATHS[image_set]
     ann_file = os.path.join(root, ann_file)
 
-    if use_v2:
-        from torchvision.datasets import wrap_dataset_for_transforms_v2
+    t = [ConvertCocoPolysToMask()]
+    if transforms is not None:
+        t.append(transforms)
+    transforms = T.Compose(t)
 
-        dataset = CocoOnlineDataset(None, ann_file, transforms=transforms)
-        target_keys = ["boxes", "labels", "image_id"]
-        if with_masks:
-            target_keys += ["masks"]
-        # won't work
-        dataset = wrap_dataset_for_transforms_v2(dataset, target_keys=target_keys)
-    else:
-        # TODO: handle with_masks for V1?
-        t = [ConvertCocoPolysToMask()]
-        if transforms is not None:
-            t.append(transforms)
-        transforms = T.Compose(t)
-
-        dataset = CocoOnlineDataset(None, ann_file, transforms=transforms)
+    dataset = CocoOnlineDataset(None, ann_file, transforms=transforms)
 
     if image_set == "train":
         dataset = _coco_remove_images_without_annotations(dataset)

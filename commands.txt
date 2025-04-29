@@ -1,10 +1,10 @@
 LOCAL NON-DISTRIBUTED
-python train.py --dataset coco --model ssdlite_mobilevit --epochs 200 --aspect-ratio-group-factor 3 --use-v2 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009 --batch-size 128 --weight-decay 0.01 --data-augmentation ssdlite
+python train.py --dataset coco --model ssdlite_mobilevit --epochs 200 --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009 --batch-size 128 --weight-decay 0.01 --data-augmentation ssdlite
 
 COLAB NON-DISTRIBUTED
 !python train.py\
     --data-path {coco_root} --dataset coco_online --model ssdlite_mobilevit --epochs 200\
-    --aspect-ratio-group-factor 3 --use-v2 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009\
+    --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009\
     --batch-size 128 --weight-decay 0.01 --data-augmentation ssdlite
 
 DISTRIBUTED

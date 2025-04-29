@@ -26,6 +26,73 @@ class Compose:
             image, target = t(image, target)
         return image, target
 
+class Resize(T.Resize):
+    def forward(
+        self, image: Tensor, target: Optional[Dict[str, Tensor]] = None
+    ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
+        # Get original image size *before* resizing
+        orig_w, orig_h = image.size
+
+        # Perform the image resize using the parent class's logic
+        # This applies the resizing logic (e.g., interpolation, aspect ratio handling)
+        resized_image = super().forward(image)
+
+        # Get the new image size after resizing
+        new_w, new_h = resized_image.size
+
+        # If there's no target, just return the resized image
+        if target is None:
+            return resized_image, None
+
+        # --- Handle Target Transformation ---
+
+        # Calculate scaling factors
+        # Avoid division by zero if original dimensions were 0 (unlikely for valid images)
+        scale_w = new_w / orig_w if orig_w > 0 else 1.0
+        scale_h = new_h / orig_h if orig_h > 0 else 1.0
+
+        # 1. Resize Bounding Boxes
+        if "boxes" in target and target["boxes"].numel() > 0:
+            boxes = target["boxes"] # [x1, y1, x2, y2] format
+
+            # Scale x coordinates (0 and 2 indices) by scale_w
+            boxes[:, 0::2] *= scale_w
+            # Scale y coordinates (1 and 3 indices) by scale_h
+            boxes[:, 1::2] *= scale_h
+
+            target["boxes"] = boxes # Update the target dictionary
+
+        # 2. Resize Masks
+        if "masks" in target and target["masks"].numel() > 0:
+            masks = target["masks"] # [N, H, W] format
+
+            # Resize masks using functional resize.
+            # Use NEAREST interpolation for masks to preserve discrete values.
+            resized_masks = F.resize(masks, (new_h, new_w), interpolation=F.InterpolationMode.NEAREST)
+
+            target["masks"] = resized_masks # Update the target dictionary
+
+        # 3. Resize Keypoints
+        if "keypoints" in target and target["keypoints"].numel() > 0:
+             keypoints = target["keypoints"] # [N, K, 3] format (x, y, visibility)
+
+             # Scale x and y coordinates (first two dimensions of the last axis)
+             # Keep the visibility (third dimension) unchanged
+             keypoints[:, :, 0] *= scale_w
+             keypoints[:, :, 1] *= scale_h
+
+             target["keypoints"] = keypoints # Update the target dictionary
+
+        # 4. Update Area
+        # Area scales by the product of width and height scaling factors
+        if "area" in target and target["area"].numel() > 0:
+             target["area"] = target["area"] * (scale_w * scale_h) # Update the target dictionary
+
+
+        # Labels, image_id, and iscrowd do not depend on image coordinates,
+        # so they remain unchanged in the target dictionary.
+
+        return resized_image, target
 
 class RandomHorizontalFlip(T.RandomHorizontalFlip):
     def forward(
