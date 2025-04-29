@@ -256,7 +256,7 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
         target = dict(image_id=img_id, annotations=annotations)
 
         if self._transforms is not None:
-             image = self._transforms(image, target)
+             image, target = self._transforms(image, target)
 
         return image, target
 
