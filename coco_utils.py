@@ -282,34 +282,10 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
 
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
         annotations = self.coco.loadAnns(ann_ids)
+        
+        target = dict(image_id=img_id, annotations=annotations)
 
-        target = annotations # Start with the list of annotation dictionaries
-
-        # Convert list of annotation dicts to tensor dict format
-        formatted_target = {}
-        formatted_target['image_id'] = torch.tensor([img_id])
-
-        boxes = []
-        labels = []
-        area = []
-        iscrowd = []
-
-        for ann in annotations:
-            x, y, w, h = ann['bbox']
-            boxes.append([x, y, x + w, y + h])
-            labels.append(ann['category_id'])
-            area.append(ann['area'])
-            iscrowd.append(ann['iscrowd'])
-
-        formatted_target['boxes'] = torch.as_tensor(boxes, dtype=torch.float32)
-        formatted_target['labels'] = torch.as_tensor(labels, dtype=torch.int64)
-        formatted_target['area'] = torch.as_tensor(area, dtype=torch.float32)
-        formatted_target['iscrowd'] = torch.as_tensor(iscrowd, dtype=torch.uint8)
-
-        if self.transforms is not None:
-             image = self.transforms(image, target)
-
-        return image, formatted_target
+        return image, target
 
 def get_coco(root, image_set, transforms, mode='instances'):
     anno_file_template = "{}_{}2017.json"
