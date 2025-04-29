@@ -227,40 +227,11 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
     and uses the parent class for annotation loading and parsing.
     """
     def __init__(self, img_folder, ann_file, transforms=None):
-        """
-        Args:
-            img_folder (string): Root directory where images *would* be stored if local.
-                           Required by CocoDetection, but not used for online loading.
-            annotation_file (string): Path to the COCO annotation JSON file.
-            transform (callable, optional): A function/transform that takes in a PIL image
-                                            and returns a transformed version. E.g, transforms.ToTensor
-            target_transform (callable, optional): A function/transform that takes in the
-                                                   target and transforms it.
-            transforms (callable, optional): A function/transform that takes input sample
-                                             and its target as entry and returns a transformed version.
-                                             This is preferred over transform and target_transform.
-        """
-        # Call the parent class constructor. This loads the annotations and sets up
-        # self.coco (the pycocotools object) and self.ids (list of image ids).
-        super().__init__(img_folder, ann_file, transforms=transforms)
+        super().__init__(img_folder, ann_file)
+        self._transforms = transforms
         print(f"Annotations loaded from {ann_file} by CocoDetection parent class.")
 
-        # The parent class has loaded the annotations into self.coco and populated self.ids.
-        # We will use these in __getitem__ to get image info and annotations.
-
     def __getitem__(self, index):
-        """
-        Retrieves the image and its annotations at the given index.
-
-        Args:
-            index (int): Index of the image to retrieve.
-
-        Returns:
-            tuple: (image, target) where image is a PIL Image and target
-                   is a dictionary containing annotations for the image, formatted
-                   by the parent CocoDetection class.
-        """
-        # Get image ID using the index, leveraging the parent's self.ids
         img_id = self.ids[index]
 
         # Get image info using the parent's self.coco object
@@ -268,7 +239,6 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
         img_info = self.coco.loadImgs(img_id)[0]
         img_url = img_info['coco_url'] # Assuming 'coco_url' key exists in your annotations
 
-        # --- Load Image from URL ---
         try:
             response = requests.get(img_url, stream=True)
             response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
@@ -285,8 +255,8 @@ class CocoOnlineDataset(torchvision.datasets.CocoDetection):
         
         target = dict(image_id=img_id, annotations=annotations)
 
-        if self.transforms is not None:
-             image = self.transforms(image, target)
+        if self._transforms is not None:
+             image = self._transforms(image, target)
 
         return image, target
 
@@ -338,5 +308,8 @@ def get_coco_online(root, image_set, transforms, mode='instances'):
     ann_file = os.path.join(root, PATHS[image_set])
 
     dataset = CocoOnlineDataset(None, ann_file=ann_file, transforms=transforms)
+
+    if image_set == "train":
+        dataset = _coco_remove_images_without_annotations(dataset)
 
     return dataset
