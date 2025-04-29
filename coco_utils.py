@@ -1,7 +1,9 @@
 import copy
+from io import BytesIO
 import os
 from PIL import Image
 
+import requests
 import torch
 import torch.utils.data
 import torchvision
@@ -219,6 +221,148 @@ class CocoDetection(torchvision.datasets.CocoDetection):
             img, target = self._transforms(img, target)
         return img, target
 
+class CocoOnlineDataset(torchvision.datasets.CocoDetection):
+    """
+    A custom PyTorch Dataset inheriting from CocoDetection that loads images from URLs
+    and uses the parent class for annotation loading and parsing.
+    """
+    def __init__(self, img_folder, ann_file, transforms=None):
+        """
+        Args:
+            img_folder (string): Root directory where images *would* be stored if local.
+                           Required by CocoDetection, but not used for online loading.
+            annotation_file (string): Path to the COCO annotation JSON file.
+            transform (callable, optional): A function/transform that takes in a PIL image
+                                            and returns a transformed version. E.g, transforms.ToTensor
+            target_transform (callable, optional): A function/transform that takes in the
+                                                   target and transforms it.
+            transforms (callable, optional): A function/transform that takes input sample
+                                             and its target as entry and returns a transformed version.
+                                             This is preferred over transform and target_transform.
+        """
+        # Call the parent class constructor. This loads the annotations and sets up
+        # self.coco (the pycocotools object) and self.ids (list of image ids).
+        super().__init__(img_folder, ann_file, transforms=transforms)
+        print(f"Annotations loaded from {ann_file} by CocoDetection parent class.")
+
+        # The parent class has loaded the annotations into self.coco and populated self.ids.
+        # We will use these in __getitem__ to get image info and annotations.
+
+    def __getitem__(self, index):
+        """
+        Retrieves the image and its annotations at the given index.
+
+        Args:
+            index (int): Index of the image to retrieve.
+
+        Returns:
+            tuple: (image, target) where image is a PIL Image and target
+                   is a dictionary containing annotations for the image, formatted
+                   by the parent CocoDetection class.
+        """
+        # Get image ID using the index, leveraging the parent's self.ids
+        img_id = self.ids[index]
+
+        # Get image info using the parent's self.coco object
+        # self.coco.loadImgs returns a list, we take the first element
+        img_info = self.coco.loadImgs(img_id)[0]
+        img_url = img_info['coco_url'] # Assuming 'coco_url' key exists in your annotations
+
+        # --- Load Image from URL ---
+        try:
+            response = requests.get(img_url, stream=True)
+            response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+            image = Image.open(BytesIO(response.content)).convert('RGB')
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching image from {img_url}: {e}")
+            # Handle the error - returning None might cause issues with DataLoader.
+            # A more robust approach might be to retry, skip, or raise a custom error.
+            # For now, we'll return None and rely on a custom collate_fn to handle this.
+            return None, None
+        except Exception as e:
+             print(f"Error processing image from {img_url}: {e}")
+             return None, None
+
+        # --- Get Annotations and Format Target ---
+        # The parent CocoDetection class handles loading and formatting annotations.
+        # We can get the annotations for this image ID using self.coco
+        ann_ids = self.coco.getAnnIds(imgIds=img_id)
+        annotations = self.coco.loadAnns(ann_ids)
+
+        # The parent CocoDetection also has a method to prepare the target.
+        # We can call the parent's __getitem__ to get the formatted target,
+        # but since we've already loaded the image, we'll manually format
+        # the target here to match the parent's expected output format.
+        # This manual formatting mirrors what CocoDetection does internally.
+        target = annotations # Start with the list of annotation dictionaries
+
+        # Apply transformations (including target_transform if provided)
+        # Note: CocoDetection's transform/target_transform/transforms handle
+        # applying transformations to both image and target if specified.
+        # If you use the 'transforms' argument, it should be a callable that
+        # takes (image, target) and returns (transformed_image, transformed_target).
+        # If you use 'transform' and 'target_transform', they are applied separately.
+
+        # If using the combined 'transforms' callable
+        if self.transforms is not None:
+             image, target = self.transforms(image, target)
+        # If using separate 'transform' and 'target_transform'
+        elif self.transform is not None or self.target_transform is not None:
+            if self.transform is not None:
+                image = self.transform(image)
+            if self.target_transform is not None:
+                target = self.target_transform(target)
+        # Note: The default CocoDetection __getitem__ formats the target dictionary
+        # *before* applying transforms. If your transforms expect the dictionary
+        # format, you might need to adjust the order here or use the 'transforms'
+        # argument which is designed for this. Let's keep the target as the list
+        # of dictionaries for now, as that's what CocoDetection's target_transform
+        # would receive, and the combined 'transforms' would receive (image, list_of_dicts).
+
+        # If you need the target in the tensor dictionary format immediately after loading
+        # and before transforms, you would need to implement that formatting here.
+        # However, letting the parent's structure handle it via target_transform
+        # or combined transforms is generally better practice when inheriting.
+        # For compatibility with common detection model training loops, the target
+        # is usually expected as a dictionary of tensors (boxes, labels, etc.).
+        # Let's add the conversion to the tensor dictionary format here for clarity,
+        # assuming transforms are applied *after* this conversion, or that the
+        # 'transforms' callable handles the tensor dictionary format.
+
+        # Convert list of annotation dicts to tensor dict format
+        formatted_target = {}
+        formatted_target['image_id'] = torch.tensor([img_id])
+
+        boxes = []
+        labels = []
+        area = []
+        iscrowd = []
+
+        for ann in annotations:
+            # COCO bounding box format is [x, y, width, height]
+            # Convert to [x1, y1, x2, y2]
+            x, y, w, h = ann['bbox']
+            boxes.append([x, y, x + w, y + h])
+            labels.append(ann['category_id'])
+            area.append(ann['area'])
+            iscrowd.append(ann['iscrowd'])
+
+        formatted_target['boxes'] = torch.as_tensor(boxes, dtype=torch.float32)
+        formatted_target['labels'] = torch.as_tensor(labels, dtype=torch.int64)
+        formatted_target['area'] = torch.as_tensor(area, dtype=torch.float32)
+        formatted_target['iscrowd'] = torch.as_tensor(iscrowd, dtype=torch.uint8)
+
+        # Apply transformations if using the old style (transform/target_transform)
+        # Note: If you used the 'transforms' argument in __init__, it would have
+        # been applied already. This section is for compatibility if you pass
+        # transform and target_transform separately.
+        if self.transform is not None and self.transforms is None:
+             image = self.transform(image)
+        if self.target_transform is not None and self.transforms is None:
+             formatted_target = self.target_transform(formatted_target)
+
+
+        return image, formatted_target
 
 def get_coco(root, image_set, transforms, mode='instances'):
     anno_file_template = "{}_{}2017.json"
@@ -250,3 +394,23 @@ def get_coco(root, image_set, transforms, mode='instances'):
 
 def get_coco_kp(root, image_set, transforms):
     return get_coco(root, image_set, transforms, mode="person_keypoints")
+
+def get_coco_online(root, image_set, transforms, mode='instances'):
+    anno_file_template = "{}_{}2017.json"
+    PATHS = {
+        "train": os.path.join("annotations", anno_file_template.format(mode, "train")),
+        "val": os.path.join("annotations", anno_file_template.format(mode, "val")),
+        # "train": ("val2017", os.path.join("annotations", anno_file_template.format(mode, "val")))
+    }
+
+    t = [ConvertCocoPolysToMask()]
+
+    if transforms is not None:
+        t.append(transforms)
+    transforms = T.Compose(t)
+
+    ann_file = os.path.join(root, PATHS[image_set])
+
+    dataset = CocoOnlineDataset(None, ann_file=ann_file, transforms=transforms)
+
+    return dataset

@@ -3,7 +3,7 @@ import os
 import time
 import torch
 from coco_eval import evaluate
-from coco_utils import get_coco, get_coco_kp
+from coco_utils import get_coco, get_coco_kp, get_coco_online
 from engine import train_one_epoch
 from group_by_aspect_ratio import GroupedBatchSampler, create_aspect_ratio_groups
 from models import ssdlite_mobilevit
@@ -14,7 +14,8 @@ import utils
 def get_dataset(name, image_set, transform, data_path):
     paths = {
         "coco": (data_path, get_coco, 91),
-        "coco_kp": (data_path, get_coco_kp, 2)
+        "coco_kp": (data_path, get_coco_kp, 2),
+        "coco_online": (data_path, get_coco_online, 91),
     }
     p, ds_fn, num_classes = paths[name]
 
