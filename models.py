@@ -58,7 +58,15 @@ class MobileViTV2FeatureExtractor(nn.Module):
           DWSeparableConvBlock(self.mobilevitv2.feature_info.info[-1]["num_chs"], 512, 3, norm_layer),
           DWSeparableConvBlock(512, 256, 3, norm_layer),
           DWSeparableConvBlock(256, 256, 3, norm_layer),
-          DWSeparableConvBlock(256, 128, 3, norm_layer),
+          nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            Conv2dNormActivation(
+                in_channels=256,
+                out_channels=128,
+                kernel_size=1,
+                norm_layer=None,
+              ),
+            ),
         ]
       )
 
