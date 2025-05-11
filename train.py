@@ -6,7 +6,7 @@ import torchvision
 from coco_utils import get_coco, get_coco_kp, get_coco_online
 from engine import evaluate, train_one_epoch
 from group_by_aspect_ratio import GroupedBatchSampler, create_aspect_ratio_groups
-from models import ssdlite_mobilevit
+from neural_networks import ssdlite_mobilevit_multimodal, ssdlite_mobilevit_unimodal
 from torchvision.transforms import InterpolationMode
 from transforms import SimpleCopyPaste
 
@@ -53,7 +53,7 @@ def get_args_parser(add_help=True):
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
-    parser.add_argument("--model", default="ssdlite_mobilevit", type=str, help="model name")
+    parser.add_argument("--model", default="ssdlite_mobilevit_unimodal", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
         "-b", "--batch-size", default=2, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
@@ -219,8 +219,8 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
 
-    # ONLY ONE MODEL SUPPORTED
-    model = ssdlite_mobilevit(num_classes=num_classes, **kwargs)
+    model = ssdlite_mobilevit_multimodal(num_classes=num_classes, **kwargs)
+    if "ssdlite_mobilevit_multimodal" in args.model else ssdlite_mobilevit_unimodal(num_classes=num_classes, **kwargs)
     
     if args.saved_weights:
         print("Loading saved weights: {}".format(args.saved_weights))
