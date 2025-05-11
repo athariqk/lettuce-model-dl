@@ -219,8 +219,7 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
 
-    model = ssdlite_mobilevit_multimodal(num_classes=num_classes, **kwargs)
-    if "ssdlite_mobilevit_multimodal" in args.model else ssdlite_mobilevit_unimodal(num_classes=num_classes, **kwargs)
+    model = ssdlite_mobilevit_multimodal(num_classes=num_classes, **kwargs) if "ssdlite_mobilevit_multimodal" in args.model else ssdlite_mobilevit_unimodal(num_classes=num_classes, **kwargs)
     
     if args.saved_weights:
         print("Loading saved weights: {}".format(args.saved_weights))
