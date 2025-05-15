@@ -2,6 +2,7 @@ import torch
 from torchinfo import summary
 from neural_networks import lettuce_model, lettuce_model_multimodal, lettuce_model_unimodal
 from cvnets.models.detection.ssd import SingleShotMaskDetector
+from torchvision.models.detection.ssd import SSD
 
 # model = ssdlite_mobilevit_multimodal()
 # model.eval()

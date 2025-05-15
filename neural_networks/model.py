@@ -9,6 +9,7 @@ from torchvision.models.detection.transform import GeneralizedRCNNTransform
 from torchvision.models.detection._utils import BoxCoder, _topk_min
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 from torchvision.ops import boxes as box_ops
+from torchvision.models.detection._utils import SSDMatcher
 from typing import Dict, List, Optional, Tuple
 from cvnets.models.detection.ssd import SingleShotMaskDetector
 
@@ -16,7 +17,7 @@ from my_utils import ROOT_DIR
 
 
 class Modified_SSDLiteMobileViT(nn.Module):
-    """A modified SSDLite-MobileViT pretrained on COCO2017 for estimating lettuce growth phenotypes"""
+    """A modified SSDLite-MobileViT architecture for estimating lettuce growth phenotypes"""
     
     def __init__(
         self,
@@ -28,14 +29,16 @@ class Modified_SSDLiteMobileViT(nn.Module):
         nms_thresh: float = 0.5,
         detections_per_img: int = 200,
         topk_candidates: int = 400,
+        iou_thresh: float = 0.5,
+        pretrained: str = None,
         **kwargs
     ):
         super().__init__()
 
-        self.model: SingleShotMaskDetector = torch.load(
-            os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_2class_pretrained.pt"),
-            weights_only=False
-        )
+        if pretrained is None:
+            pretrained = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_pretrained.pt")
+
+        self.model: SingleShotMaskDetector = torch.load(pretrained, weights_only=False)
 
         if image_mean is None:
             image_mean = [0.485, 0.456, 0.406]
@@ -45,6 +48,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             min(size), max(size), image_mean, image_std, size_divisible=1, fixed_size=size, **kwargs
         )
 
+        self.proposal_matcher = SSDMatcher(iou_thresh)
         self.anchor_generator = DefaultBoxGenerator(aspect_ratios, min_ratio=0.1, max_ratio=1.05)
         self.box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
 
@@ -66,19 +70,6 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         return detections
 
-    def hard_negative_mining(
-        self, loss: Tensor, labels: Tensor
-    ) -> Tensor:
-        pos_mask = labels > 0
-        num_pos = pos_mask.long().sum(dim=1, keepdim=True)
-        num_neg = num_pos * self.neg_to_pos_ratio
-
-        loss[pos_mask] = -math.inf
-        _, indexes = loss.sort(dim=1, descending=True)
-        _, orders = indexes.sort(dim=1)
-        neg_mask = orders < num_neg
-        return pos_mask | neg_mask
-
     def compute_loss(
         self,
         head_outputs: Dict[str, Tensor],
@@ -96,6 +87,20 @@ class Modified_SSDLiteMobileViT(nn.Module):
                                               "phenotypes_pred": [B, N, num_phenotypes] (optional)}
             anchors (Tensor): Default boxes from CVNet model, shape [B, N, 4].
         """
+
+        matched_idxs = []
+        for anchors_per_image, targets_per_image in zip(anchors, targets):
+            if targets_per_image["boxes"].numel() == 0:
+                matched_idxs.append(
+                    torch.full(
+                        (anchors_per_image.size(0),), -1, dtype=torch.int64, device=anchors_per_image.device
+                    )
+                )
+                continue
+
+            match_quality_matrix = box_ops.box_iou(targets_per_image["boxes"], anchors_per_image)
+            matched_idxs.append(self.proposal_matcher(match_quality_matrix))
+
         bbox_regression = head_outputs["bbox_regression"]
         cls_logits = head_outputs["cls_logits"]
         phenotypes = head_outputs["phenotypes_pred"]
@@ -105,57 +110,60 @@ class Modified_SSDLiteMobileViT(nn.Module):
         bbox_loss = []
         cls_targets = []
         for (
-            targets_per_image,
-            bbox_regression_per_image,
-            anchors_per_image,
-        ) in zip(targets, bbox_regression, anchors):
+                targets_per_image,
+                bbox_regression_per_image,
+                cls_logits_per_image,
+                anchors_per_image,
+                matched_idxs_per_image,
+        ) in zip(targets, bbox_regression, cls_logits, anchors, matched_idxs):
             # produce the matching between boxes and targets
-            gt_coordinates, gt_labels = self.model.match_prior(
-                gt_boxes=targets_per_image["boxes"],
-                gt_labels=targets_per_image["labels"],
-                anchors=anchors_per_image,
-            )
-
-            num_coordinates = bbox_regression_per_image.shape[-1]
+            foreground_idxs_per_image = torch.where(matched_idxs_per_image >= 0)[0]
+            foreground_matched_idxs_per_image = matched_idxs_per_image[foreground_idxs_per_image]
+            num_foreground += foreground_matched_idxs_per_image.numel()
 
             # Calculate regression loss
-            pos_mask = gt_labels > 0
-            predicted_locations = bbox_regression_per_image[pos_mask].reshape(-1, num_coordinates)
-            gt_coordinates = gt_coordinates[pos_mask].reshape(-1, num_coordinates)
-            num_foreground += gt_coordinates.shape[0]
-            bbox_loss.append(F.smooth_l1_loss(predicted_locations, gt_coordinates, reduction="sum"))
-            
-            cls_targets.append(gt_labels)
+            matched_gt_boxes_per_image = targets_per_image["boxes"][foreground_matched_idxs_per_image]
+            bbox_regression_per_image = bbox_regression_per_image[foreground_idxs_per_image, :]
+            anchors_per_image = anchors_per_image[foreground_idxs_per_image, :]
+            target_regression = self.box_coder.encode_single(matched_gt_boxes_per_image, anchors_per_image)
+            bbox_loss.append(
+                torch.nn.functional.smooth_l1_loss(bbox_regression_per_image, target_regression, reduction="sum")
+            )
+
+            # Estimate ground truth for class targets
+            gt_classes_target = torch.zeros(
+                (cls_logits_per_image.size(0),),
+                dtype=targets_per_image["labels"].dtype,
+                device=targets_per_image["labels"].device,
+            )
+            gt_classes_target[foreground_idxs_per_image] = targets_per_image["labels"][
+                foreground_matched_idxs_per_image
+            ]
+            cls_targets.append(gt_classes_target)
 
         bbox_loss = torch.stack(bbox_loss)
         cls_targets = torch.stack(cls_targets)
 
-        num_classes = cls_logits.shape[-1]
-
-        with torch.no_grad():
-            loss = -F.log_softmax(cls_logits, dim=2)[:, :, 0]
-            mask = self.hard_negative_mining(loss, cls_targets)
-
-        cls_logits_masked = cls_logits[mask, :]
-        cls_targets_masked = cls_targets[mask]
-
-        label_smoothing = self.label_smoothing if self.training else 0.0
-
-        classification_loss = F.cross_entropy(
-            input=cls_logits_masked.reshape(-1, num_classes),
-            target=cls_targets_masked,
-            reduction="sum",
-            label_smoothing=label_smoothing,
+        # Calculate classification loss
+        num_classes = cls_logits.size(-1)
+        cls_loss = F.cross_entropy(cls_logits.view(-1, num_classes), cls_targets.view(-1), reduction="none").view(
+            cls_targets.size()
         )
 
-        N_reg = max(1, num_foreground)
+        # Hard Negative Sampling
+        foreground_idxs = cls_targets > 0
+        num_negative = self.neg_to_pos_ratio * foreground_idxs.sum(1, keepdim=True)
+        # num_negative[num_negative < self.neg_to_pos_ratio] = self.neg_to_pos_ratio
+        negative_loss = cls_loss.clone()
+        negative_loss[foreground_idxs] = -float("inf")  # use -inf to detect positive values that creeped in the sample
+        values, idx = negative_loss.sort(1, descending=True)
+        # background_idxs = torch.logical_and(idx.sort(1)[1] < num_negative, torch.isfinite(values))
+        background_idxs = idx.sort(1)[1] < num_negative
 
-        num_masked_samples = cls_targets_masked.numel()
-        N_cls = max(1, num_masked_samples)
-
+        N = max(1, num_foreground)
         return {
-            "reg_loss": bbox_loss.sum() / N_reg,
-            "cls_loss": classification_loss / N_cls,
+            "bbox_loss": bbox_loss.sum() / N,
+            "cls_loss": (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N,
         }
 
         # --- (Optional) Phenotype Loss ---
