@@ -42,7 +42,7 @@ class LettuceDataset(VisionDataset):
         image = self._load_image(id)
         target = self._load_target(id)
         
-        image, target = self.wrap_to_tv2(id, (image, target))
+        image, target = self.wrap_to_tv2(index, (image, target))
 
         if self.transforms is not None:
             image, target = self.transforms(image, target)

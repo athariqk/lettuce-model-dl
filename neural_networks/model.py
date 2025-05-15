@@ -136,19 +136,26 @@ class Modified_SSDLiteMobileViT(nn.Module):
             loss = -F.log_softmax(cls_logits, dim=2)[:, :, 0]
             mask = self.hard_negative_mining(loss, cls_targets)
 
-        cls_logits = cls_logits[mask, :]
+        cls_logits_masked = cls_logits[mask, :]
+        cls_targets_masked = cls_targets[mask]
+
         label_smoothing = self.label_smoothing if self.training else 0.0
+
         classification_loss = F.cross_entropy(
-            input=cls_logits.reshape(-1, num_classes),
-            target=cls_targets[mask],
+            input=cls_logits_masked.reshape(-1, num_classes),
+            target=cls_targets_masked,
             reduction="sum",
             label_smoothing=label_smoothing,
         )
 
-        N = max(1, num_foreground)
+        N_reg = max(1, num_foreground)
+
+        num_masked_samples = cls_targets_masked.numel()
+        N_cls = max(1, num_masked_samples)
+
         return {
-            "reg_loss": bbox_loss / N,
-            "cls_loss": classification_loss / N,
+            "reg_loss": bbox_loss.sum() / N_reg,
+            "cls_loss": classification_loss / N_cls,
         }
 
         # --- (Optional) Phenotype Loss ---

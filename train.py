@@ -3,13 +3,11 @@ import os
 import time
 import torch
 import torchvision
-import torch.nn as nn
 import torchvision.ops._utils
 from coco_utils import get_coco, get_coco_kp, get_coco_online
 from dataset import get_lettuce_data
 from engine import evaluate, train_one_epoch
 from group_by_aspect_ratio import GroupedBatchSampler, create_aspect_ratio_groups
-from neural_networks import lettuce_model, lettuce_model_multimodal, lettuce_model_unimodal
 from torchvision.transforms import InterpolationMode
 from neural_networks.utils import get_model
 from transforms import SimpleCopyPaste
