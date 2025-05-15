@@ -37,3 +37,18 @@ def retrieve_out_channels(
         model.train()
 
     return out_channels
+
+def get_model(name: str, **kwargs) -> nn.Module:
+    import neural_networks
+
+    model = nn.Identity()
+    if "lettuce_model_multimodal" in name:
+        model = neural_networks.lettuce_model_multimodal(**kwargs)
+    elif "lettuce_model_unimodal" in name:
+        model = neural_networks.lettuce_model_unimodal(**kwargs)
+    elif "lettuce_model" in name:
+        model = neural_networks.lettuce_model(**kwargs)
+    
+    model.eval()
+
+    return model

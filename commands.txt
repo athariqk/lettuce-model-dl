@@ -1,11 +1,11 @@
 LOCAL NON-DISTRIBUTED
-python train.py --dataset coco --model ssdlite_mobilevit --epochs 200 --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009 --batch-size 128 --weight-decay 0.01 --data-augmentation ssdlite
+python train.py --data-path data\lettuce --dataset lettuce --model lettuce_model --epochs 200 --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009 --batch-size 24 --weight-decay 0.05 --data-augmentation ssd --use-v2 --output-dir runs\
 
 COLAB NON-DISTRIBUTED
 !python train.py\
-    --data-path {coco_root} --dataset coco_online --model ssdlite_mobilevit --epochs 200\
-    --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009\
-    --batch-size 128 --weight-decay 0.01 --data-augmentation ssdlite
+    --data-path {coco_root} --dataset coco_online --model modified_ssdlite_mobilevit --epochs 200\
+    --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.15\
+    --batch-size 64 --weight-decay 0.01 --data-augmentation ssd --output-dir /content/output
 
 DISTRIBUTED
-torchrun --nproc_per_node=8 train.py --dataset coco --model ssdlite_mobilevit --epochs 660 --aspect-ratio-group-factor 3 --lr-scheduler cosineannealinglr --lr 0.15 --batch-size 34 --weight-decay 0.00004 --data-augmentation ssdlite
+torchrun --nproc_per_node=8 train.py --dataset coco --model modified_ssdlite_mobilevit --epochs 660 --aspect-ratio-group-factor 3 --lr-scheduler cosineannealinglr --lr 0.15 --batch-size 34 --weight-decay 0.00004 --data-augmentation ssd

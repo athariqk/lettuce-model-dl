@@ -3,15 +3,19 @@ import os
 import time
 import torch
 import torchvision
+import torch.nn as nn
+import torchvision.ops._utils
 from coco_utils import get_coco, get_coco_kp, get_coco_online
+from dataset import get_lettuce_data
 from engine import evaluate, train_one_epoch
 from group_by_aspect_ratio import GroupedBatchSampler, create_aspect_ratio_groups
-from neural_networks import ssdlite_mobilevit_multimodal, ssdlite_mobilevit_unimodal
+from neural_networks import lettuce_model, lettuce_model_multimodal, lettuce_model_unimodal
 from torchvision.transforms import InterpolationMode
+from neural_networks.utils import get_model
 from transforms import SimpleCopyPaste
 
 import presets
-import utils
+import my_utils as utils
 
 def copypaste_collate_fn(batch):
     copypaste = SimpleCopyPaste(blending=True, resize_interpolation=InterpolationMode.BILINEAR)
@@ -23,6 +27,7 @@ def get_dataset(is_train, args):
         "coco": (args.data_path, get_coco, 91),
         "coco_kp": (args.data_path, get_coco_kp, 2),
         "coco_online": (args.data_path, get_coco_online, 91),
+        "lettuce": (args.data_path, get_lettuce_data, 2)
     }
     p, ds_fn, num_classes = paths[args.dataset]
 
@@ -53,7 +58,7 @@ def get_args_parser(add_help=True):
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
-    parser.add_argument("--model", default="ssdlite_mobilevit_unimodal", type=str, help="model name")
+    parser.add_argument("--model", default="lettuce_model", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
         "-b", "--batch-size", default=2, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
@@ -156,7 +161,7 @@ def get_args_parser(add_help=True):
 def main(args):
     if args.backend.lower() == "tv_tensor" and not args.use_v2:
         raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
-    if args.dataset not in ("coco", "coco_kp", "coco_online"):
+    if args.dataset not in ("coco", "coco_kp", "coco_online", "lettuce"):
         raise ValueError(f"Dataset should be coco, coco_kp or coco_online, got {args.dataset}")
     if "keypoint" in args.model and args.dataset != "coco_kp":
         raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")
@@ -182,8 +187,8 @@ def main(args):
 
     print("Creating data loaders")
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-        test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test)
+        train_sampler = torch.utils.data.DistributedSampler(dataset)
+        test_sampler = torch.utils.data.DistributedSampler(dataset_test)
     else:
         train_sampler = torch.utils.data.RandomSampler(dataset)
         test_sampler = torch.utils.data.SequentialSampler(dataset_test)
@@ -219,7 +224,7 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
 
-    model = ssdlite_mobilevit_multimodal(num_classes=num_classes, **kwargs) if "ssdlite_mobilevit_multimodal" in args.model else ssdlite_mobilevit_unimodal(num_classes=num_classes, **kwargs)
+    model = get_model(args.model, num_classes=num_classes, **kwargs)
     
     if args.saved_weights:
         print("Loading saved weights: {}".format(args.saved_weights))
@@ -256,7 +261,7 @@ def main(args):
     else:
         raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD and AdamW are supported.")
 
-    scaler = torch.amp.GradScaler() if args.amp else None
+    scaler = torch.amp.grad_scaler.GradScaler() if args.amp else None
 
     args.lr_scheduler = args.lr_scheduler.lower()
     if args.lr_scheduler == "multisteplr":
@@ -274,7 +279,7 @@ def main(args):
         optimizer.load_state_dict(checkpoint["optimizer"])
         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
         args.start_epoch = checkpoint["epoch"] + 1
-        if args.amp:
+        if scaler:
             scaler.load_state_dict(checkpoint["scaler"])
 
     if args.test_only:
@@ -297,7 +302,7 @@ def main(args):
                 "args": args,
                 "epoch": epoch,
             }
-            if args.amp:
+            if scaler:
                 checkpoint["scaler"] = scaler.state_dict()
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))

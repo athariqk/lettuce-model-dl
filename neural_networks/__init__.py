@@ -1,4 +1,5 @@
 from functools import partial
+import torch
 import torch.nn as nn
 from typing import Any, Callable, Optional
 from torchvision.models.detection.ssd import SSD
@@ -7,16 +8,30 @@ from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 
 from .utils import retrieve_out_channels
 
-from .model import ModifiedSSD
+from .model import Modified_SSDLiteMobileViT
 from .backbone import MobileViTV2FeatureExtractor
 from .head import ModifiedSSDLiteHead
 
 __all__ = [
-  "ssdlite_mobilevit_unimodal"
-  "ssdlite_mobilevit_multimodal"
+  "lettuce_model",
+  "lettuce_model_unimodal",
+  "lettuce_model_multimodal",
 ]
 
-def ssdlite_mobilevit_unimodal(
+def lettuce_model(
+  **kwargs: Any
+) -> Modified_SSDLiteMobileViT:
+    'Loads a unimodal model for lettuce growth phenotype estimation'
+    model = Modified_SSDLiteMobileViT(
+      size=(320, 320),
+      aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
+      image_mean=[0.0, 0.0, 0.0],
+      image_std=[1.0, 1.0, 1.0],
+      **kwargs
+    )
+    return model
+
+def lettuce_model_unimodal(
     num_classes: Optional[int] = None,
     norm_layer: Optional[Callable[..., nn.Module]] = None,
     **kwargs: Any
@@ -48,8 +63,8 @@ def ssdlite_mobilevit_unimodal(
       "image_mean": [0.5, 0.5, 0.5],
       "image_std": [0.5, 0.5, 0.5],
     }
-    kwargs: Any = {**defaults, **kwargs}
-    model = ModifiedSSD(
+    kwargs = {**defaults, **kwargs}
+    model = SSD(
         backbone,
         anchor_generator,
         size,
@@ -60,11 +75,11 @@ def ssdlite_mobilevit_unimodal(
     
     return model
 
-def ssdlite_mobilevit_multimodal(
+def lettuce_model_multimodal(
     num_classes: Optional[int] = None,
     norm_layer: Optional[Callable[..., nn.Module]] = None,
     **kwargs: Any
-) -> ModifiedSSD:
+) -> SSD:
   if num_classes is None:
     num_classes = 91
 
@@ -93,7 +108,7 @@ def ssdlite_mobilevit_multimodal(
     "image_std": [0.5, 0.5, 0.5],
   }
   kwargs: Any = {**defaults, **kwargs}
-  model = ModifiedSSD(
+  model = SSD(
       backbone,
       anchor_generator,
       size,

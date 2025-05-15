@@ -1,4 +1,5 @@
 from collections import defaultdict
+import functools
 
 import torch
 import transforms as reference_transforms
@@ -13,6 +14,9 @@ def get_modules(use_v2):
         return torchvision.transforms.v2, torchvision.tv_tensors
     else:
         return reference_transforms, None
+
+def get_mean_fill(mean_value):
+    return mean_value
 
 class DetectionPresetTrain:
     # Note: this transform assumes that the input to forward() are always PIL
@@ -53,7 +57,7 @@ class DetectionPresetTrain:
                 T.RandomHorizontalFlip(p=hflip_prob),
             ]
         elif data_augmentation == "ssd":
-            fill = defaultdict(lambda: mean, {tv_tensors.Mask: 0}) if use_v2 else list(mean)
+            fill = defaultdict(functools.partial(get_mean_fill, mean), {tv_tensors.Mask: 0}) if use_v2 else list(mean)
             transforms += [
                 T.RandomPhotometricDistort(),
                 T.RandomZoomOut(fill=fill),
