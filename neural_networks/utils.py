@@ -50,7 +50,7 @@ def get_model(name: str, **kwargs) -> nn.Module:
     elif "baseline_model" in name:
         model = neural_networks.baseline_model()
     else:
-        raise ValueError("Unexpected model name: {name}")
+        raise ValueError(f"Unexpected model name: {name}")
     
     model.eval()
 
