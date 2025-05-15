@@ -1,3 +1,4 @@
+import os
 from functools import partial
 import torch
 import torch.nn as nn
@@ -36,7 +37,7 @@ def lettuce_model(
     return model
 
 
-def baseline_model():
+def baseline_model(**kwargs: Any) -> Modified_SSDLiteMobileViT:
     model = Modified_SSDLiteMobileViT(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
