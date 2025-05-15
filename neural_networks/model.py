@@ -154,7 +154,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         N_cls = max(1, num_masked_samples)
 
         return {
-            "reg_loss": bbox_loss / N_reg,
+            "reg_loss": bbox_loss.sum() / N_reg,
             "cls_loss": classification_loss / N_cls,
         }
 
