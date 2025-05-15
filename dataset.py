@@ -9,6 +9,8 @@ from torchvision.transforms.v2 import functional as F
 
 from PIL import Image
 
+from coco_utils import _coco_remove_images_without_annotations
+
 
 class LettuceDataset(VisionDataset):
     def __init__(
@@ -109,5 +111,7 @@ def get_lettuce_data(root, image_set, transforms, mode="instances", use_v2=False
     ann_file = os.path.join(root, ann_file)
 
     dataset = LettuceDataset(img_folder, ann_file, transforms=transforms)
+
+    dataset = _coco_remove_images_without_annotations(dataset)
 
     return dataset
