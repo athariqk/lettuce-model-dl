@@ -23,6 +23,7 @@ __all__ = [
 
 
 def lettuce_model(
+        load_weights = True,
         **kwargs: Any
 ) -> Modified_SSDLiteMobileViT:
     'Loads a unimodal model for lettuce growth phenotype estimation'
@@ -34,6 +35,11 @@ def lettuce_model(
         pretrained=os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_2class_pretrained.pt"),
         **kwargs
     )
+
+    if load_weights:
+        chkpt = torch.load(os.path.join(ROOT_DIR, "models/model_10.pth"), weights_only=False)
+        model.load_state_dict(chkpt["model"])
+
     return model
 
 
