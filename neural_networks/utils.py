@@ -47,10 +47,12 @@ def get_model(name: str, **kwargs) -> nn.Module:
         model = neural_networks.lettuce_model_unimodal(**kwargs)
     elif "lettuce_model" in name:
         model = neural_networks.lettuce_model(**kwargs)
-    elif "baseline_model" in name:
-        model = neural_networks.baseline_model()
+    elif "baseline_model_80" in name:
+        model = neural_networks.baseline_model("80")
+    elif "baseline_model_90" in name:
+        model = neural_networks.baseline_model("90")
     else:
-        raise ValueError(f"Unexpected model name: {name}")
+        raise ValueError(f"Unexpected model name, got: {name}")
     
     model.eval()
 

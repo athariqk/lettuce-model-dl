@@ -36,7 +36,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
         super().__init__()
 
         if pretrained is None:
-            pretrained = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_pretrained.pt")
+            # baseline
+            pretrained = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_81nc_pretrained.pt")
 
         self.model: SingleShotMaskDetector = torch.load(pretrained, weights_only=False)
 

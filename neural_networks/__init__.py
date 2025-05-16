@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 from typing import Any, Callable, Optional
 from torchvision.models.detection.ssd import SSD
-from torchvision.models.detection.ssdlite import SSDLiteHead
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 
 from .utils import retrieve_out_channels
@@ -32,7 +31,7 @@ def lettuce_model(
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
         image_mean=[0.0, 0.0, 0.0],
         image_std=[1.0, 1.0, 1.0],
-        pretrained=os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_2class_pretrained.pt"),
+        pretrained=os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt"),
         **kwargs
     )
 
@@ -43,13 +42,20 @@ def lettuce_model(
     return model
 
 
-def baseline_model(**kwargs: Any) -> Modified_SSDLiteMobileViT:
+def baseline_model(variant: str, **kwargs: Any) -> Modified_SSDLiteMobileViT:
+    if "80" in variant:
+        variant = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_81nc_pretrained.pt")
+    elif "90" in variant:
+        variant = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_91nc_pretrained.pt")
+    else:
+        raise ValueError(f"Unexpected variant, got: {variant}")
+
     model = Modified_SSDLiteMobileViT(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
         image_mean=[0.0, 0.0, 0.0],
         image_std=[1.0, 1.0, 1.0],
-        pretrained=os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_pretrained.pt"),
+        pretrained=variant,
         **kwargs
     )
     return model

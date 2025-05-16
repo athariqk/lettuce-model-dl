@@ -24,19 +24,19 @@ from torchvision.models.detection.ssd import SSD
 # model.eval()
 
 model: SingleShotMaskDetector = torch.load(
-            "models/coco-ssd-mobilevitv2-0.75_structure.pt", weights_only=False)
-checkpoint = torch.load("models/coco-ssd-mobilevitv2-0.75_weight.pt")
+            "models/coco-ssd-mobilevitv2-0.75_91nc_structure.pt", weights_only=False)
+checkpoint = torch.load("models/coco-ssd-mobilevitv2-0.75_81nc_weight.pt")
 
-# # # Step 3.
-# # for k in model.state_dict().keys():
-# #     if model.state_dict()[k].shape != checkpoint[k].shape:
-# #         print('key {} will be removed, orishape: {}, training shape: {}'.format(k, checkpoint[k].shape, model.state_dict()[k].shape))
-# #         checkpoint.pop(k)
+# Step 3.
+for k in model.state_dict().keys():
+    if model.state_dict()[k].shape != checkpoint[k].shape:
+        print('key {} will be removed, orishape: {}, training shape: {}'.format(k, checkpoint[k].shape, model.state_dict()[k].shape))
+        checkpoint.pop(k)
 
 model.load_state_dict(checkpoint, strict=False)
 model.eval()
 
-torch.save(model, "models/coco-ssd-mobilevitv2-0.75_pretrained.pt")
+torch.save(model, "models/coco-ssd-mobilevitv2-0.75_91nc_pretrained.pt")
 
 # batch_size = 1
 # channels = 3
