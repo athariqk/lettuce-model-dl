@@ -22,7 +22,7 @@ __all__ = [
 
 
 def lettuce_model(
-        load_weights = True,
+        load_weights = False,
         **kwargs: Any
 ) -> Modified_SSDLiteMobileViT:
     'Loads a unimodal model for lettuce growth phenotype estimation'
