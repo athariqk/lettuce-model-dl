@@ -69,6 +69,8 @@ class DetectionPresetTrain:
                 T.RandomIoUCrop(),
                 T.RandomHorizontalFlip(p=hflip_prob),
             ]
+        elif data_augmentation == "none":
+            pass
         else:
             raise ValueError(f'Unknown data augmentation policy "{data_augmentation}"')
 

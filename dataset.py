@@ -12,11 +12,12 @@ from PIL import Image
 from coco_utils import _coco_remove_images_without_annotations
 
 
-class LettuceDataset(VisionDataset):
+class CocoRGBDDataset(VisionDataset):
     def __init__(
         self,
         root: Union[str, Path],
         annFile: str,
+        depth_image_suffix: str,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         transforms: Optional[Callable] = None,
@@ -29,12 +30,35 @@ class LettuceDataset(VisionDataset):
         
         self.target_keys = {"image_id", "boxes", "labels"}
 
+        self.depth_image_suffix = depth_image_suffix
+
     def _load_image(self, id: int) -> Image.Image:
-        path = self.coco.loadImgs(id)[0]["file_name"]
-        return Image.open(os.path.join(self.root, path)).convert("RGB")
+        info = self.coco.loadImgs(id)[0]
+        subfolder = "rgb" if "rgb" in info["image_type"] else "depth"
+        return Image.open(os.path.join(self.root, subfolder, info["file_name"])).convert("RGB")
 
     def _load_target(self, id: int) -> List[Any]:
         return self.coco.loadAnns(self.coco.getAnnIds(id))
+
+    def _load_image_pair(self, id: int) -> Tuple[Image.Image, Optional[Image.Image]]:
+        img_info = self.coco.loadImgs(id)[0]
+
+        img = self._load_image(img_info["file_name"])
+        if "paired_id" in img_info:
+            paired_img_info = self.coco.loadImgs(id)[img_info["paired_id"]]
+            path = os.path.join(self.root, paired_img_info["image_type"], paired_img_info["file_name"])
+            aux = Image.open(path).convert("RGB")
+        else:
+            if "rgb" in img_info["image_type"]:
+                # Determine depth image path
+                base_name, _ = os.path.splitext(img_info["file_name"])
+                depth_file_name_short = f"Depth_{base_name.split('_')[1]}{self.depth_image_suffix}"
+                depth_path = os.path.join(self.root, "depth", depth_file_name_short)
+                aux = Image.open(depth_path).convert("RGB")
+            else:
+                aux = None
+
+        return img, aux
 
     def __getitem__(self, index: int) -> Tuple[Any, Any]:
         if not isinstance(index, int):
@@ -99,7 +123,7 @@ class LettuceDataset(VisionDataset):
         img_info = self.coco.imgs[self.ids[index]]
         return img_info["height"], img_info["width"]
 
-def get_lettuce_data(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False):
+def get_rgbd_data(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False):
     anno_file_template = "{}_{}.json"
     PATHS = {
         "train": ("train", os.path.join("annotations", anno_file_template.format(mode, "train"))),
@@ -110,7 +134,7 @@ def get_lettuce_data(root, image_set, transforms, mode="instances", use_v2=False
     img_folder = os.path.join(root, img_folder)
     ann_file = os.path.join(root, ann_file)
 
-    dataset = LettuceDataset(img_folder, ann_file, transforms=transforms)
+    dataset = CocoRGBDDataset(img_folder, ann_file, transforms=transforms, depth_image_suffix=".png")
 
     dataset = _coco_remove_images_without_annotations(dataset)
 

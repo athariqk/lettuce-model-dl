@@ -5,7 +5,7 @@ import torch
 import torchvision
 import torchvision.ops._utils
 from coco_utils import get_coco, get_coco_kp, get_coco_online
-from dataset import get_lettuce_data
+from dataset import get_rgbd_data
 from engine import evaluate, train_one_epoch
 from group_by_aspect_ratio import GroupedBatchSampler, create_aspect_ratio_groups
 from torchvision.transforms import InterpolationMode
@@ -25,7 +25,7 @@ def get_dataset(is_train, args):
         "coco": (args.data_path, get_coco, 91),
         "coco_kp": (args.data_path, get_coco_kp, 2),
         "coco_online": (args.data_path, get_coco_online, 91),
-        "lettuce": (args.data_path, get_lettuce_data, 2)
+        "coco_rgbd": (args.data_path, get_rgbd_data, 2)
     }
     p, ds_fn, num_classes = paths[args.dataset]
 
@@ -159,8 +159,8 @@ def get_args_parser(add_help=True):
 def main(args):
     if args.backend.lower() == "tv_tensor" and not args.use_v2:
         raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
-    if args.dataset not in ("coco", "coco_kp", "coco_online", "lettuce"):
-        raise ValueError(f"Dataset should be coco, coco_kp or coco_online, got {args.dataset}")
+    if args.dataset not in ("coco", "coco_kp", "coco_online", "coco_rgbd"):
+        raise ValueError(f"Dataset should be coco, coco_kp, coco_online or coco-rgbd, got {args.dataset}")
     if "keypoint" in args.model and args.dataset != "coco_kp":
         raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")
     if args.dataset == "coco_kp" and args.use_v2:
