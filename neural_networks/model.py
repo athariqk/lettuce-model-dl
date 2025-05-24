@@ -104,19 +104,21 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         bbox_regression = head_outputs["bbox_regression"]
         cls_logits = head_outputs["cls_logits"]
-        phenotypes = head_outputs["phenotypes_pred"]
+        phenotypes_pred = head_outputs["phenotypes_pred"]
 
         # Match original targets with default boxes
         num_foreground = 0
         bbox_loss = []
         cls_targets = []
+        phenotype_loss = []
         for (
                 targets_per_image,
                 bbox_regression_per_image,
                 cls_logits_per_image,
+                phenotypes_pred_per_image,
                 anchors_per_image,
                 matched_idxs_per_image,
-        ) in zip(targets, bbox_regression, cls_logits, anchors, matched_idxs):
+        ) in zip(targets, bbox_regression, cls_logits, phenotypes_pred, anchors, matched_idxs):
             # produce the matching between boxes and targets
             foreground_idxs_per_image = torch.where(matched_idxs_per_image >= 0)[0]
             foreground_matched_idxs_per_image = matched_idxs_per_image[foreground_idxs_per_image]
@@ -142,8 +144,20 @@ class Modified_SSDLiteMobileViT(nn.Module):
             ]
             cls_targets.append(gt_classes_target)
 
+            # Calculate phenotype loss (only for foreground objects)
+            if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0:
+                matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
+                pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
+                phenotype_loss_per_image = torch.nn.functional.mse_loss(
+                    pred_phenotypes, matched_phenotypes, reduction="sum"
+                )
+                phenotype_loss.append(phenotype_loss_per_image)
+            else:
+                phenotype_loss.append(torch.tensor(0.0, device=bbox_regression.device))
+
         bbox_loss = torch.stack(bbox_loss)
         cls_targets = torch.stack(cls_targets)
+        phenotype_loss = torch.stack(phenotype_loss)
 
         # Calculate classification loss
         num_classes = cls_logits.size(-1)
@@ -162,33 +176,12 @@ class Modified_SSDLiteMobileViT(nn.Module):
         background_idxs = idx.sort(1)[1] < num_negative
 
         N = max(1, num_foreground)
+        phenotype_loss_weight = 0.3
         return {
             "bbox_loss": bbox_loss.sum() / N,
             "cls_loss": (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N,
+            "phenotype_loss": (phenotype_loss.sum() / N) * phenotype_loss_weight,
         }
-
-        # --- (Optional) Phenotype Loss ---
-        if phenotypes_pred is not None and "phenotypes" in targets[0] and self.num_phenotypes:
-            pheno_loss_sum = torch.tensor(0.0, device=cls_logits.device)
-            for i in range(batch_size):
-                targets_per_image = targets[i]
-                phenotypes_pred_per_image = phenotypes_pred[i]
-                matched_idxs_per_image = matched_idxs[i]
-                
-                foreground_idxs_per_image = torch.where(matched_idxs_per_image >= 0)[0]
-                foreground_matched_gt_idxs_per_image = matched_idxs_per_image[foreground_idxs_per_image]
-
-                if foreground_matched_gt_idxs_per_image.numel() > 0:
-                    # Assuming target phenotypes are [NumGTBoxes, NumPhenotypes]
-                    # And they are continuous variables (using MSE loss as an example)
-                    matched_gt_phenotypes = targets_per_image["phenotypes"][foreground_matched_gt_idxs_per_image]
-                    pred_pheno_for_gt = phenotypes_pred_per_image[foreground_idxs_per_image, :]
-                    pheno_loss_sum += F.mse_loss(
-                        pred_pheno_for_gt, matched_gt_phenotypes, reduction="sum"
-                    )
-            losses["phenotype_regression"] = pheno_loss_sum / N
-            
-        return losses
 
     def forward(
         self, images: List[Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
@@ -251,7 +244,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             "bbox_regression": bbox_regression, # [B, N, 4]
             "phenotypes_pred": phenotypes_pred  # [B, N, NumPhenotypes]
         }
-             
+
         # create the set of anchors
         anchors = self.anchor_generator(images_transformed, list(features.values()))
 

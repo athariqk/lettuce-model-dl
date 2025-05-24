@@ -3,11 +3,14 @@ import sys
 import time
 from typing import Optional
 
+import numpy as np
 import torch
 import torchvision
 import my_utils as utils
 from coco_eval import CocoEvaluator
 from coco_utils import get_coco_api_from_dataset
+
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_percentage_error
 
 
 def train_one_epoch(
@@ -101,6 +104,9 @@ def evaluate(model, data_loader, device):
     iou_types = _get_iou_types(model)
     coco_evaluator = CocoEvaluator(coco, iou_types)
 
+    all_pred_phenotypes = []
+    all_gt_phenotypes = []
+
     for images, targets in metric_logger.log_every(data_loader, 100, header):
         images = list(img.to(device) for img in images)
 
@@ -115,6 +121,52 @@ def evaluate(model, data_loader, device):
         res = {target["image_id"]: output for target, output in zip(targets, outputs)}
         evaluator_time = time.time()
         coco_evaluator.update(res)
+
+        # Process phenotypes for R-squared and RMSE calculation
+        for target_dict, output_dict in zip(targets, outputs):  # Renamed for clarity
+            try:
+                # Predicted phenotype (single best prediction for this image)
+                if "scores" not in output_dict or "phenotypes" not in output_dict or output_dict["scores"].numel() == 0:
+                    continue
+
+                max_score_idx = torch.argmax(output_dict["scores"])
+                # Ensure pred_phenotype_tensor is 1D (shape [2])
+                pred_phenotype_tensor = output_dict["phenotypes"][max_score_idx].squeeze()  # Squeeze just in case it's e.g. [1,2]
+                if pred_phenotype_tensor.ndim == 0 or pred_phenotype_tensor.numel() != 2:  # Check if it became scalar or wrong size
+                    continue
+                pred_phenotype_np = pred_phenotype_tensor.cpu().numpy().reshape(2)  # Ensure (2,)
+
+                # Ground truth phenotypes (can be multiple instances for this image)
+                # target_dict["phenotypes"] is shape (num_instances_in_image, 2)
+                gt_phenotypes_for_image_tensor = target_dict["phenotypes"].to(cpu_device)
+
+                if gt_phenotypes_for_image_tensor.ndim != 2 or gt_phenotypes_for_image_tensor.shape[1] != 2:
+                    continue
+
+                if gt_phenotypes_for_image_tensor.shape[0] == 0:  # No GT instances for this image
+                    continue
+
+                # Iterate through each ground truth instance in the current image
+                for i in range(gt_phenotypes_for_image_tensor.shape[0]):
+                    # gt_single_instance_tensor is shape (2,)
+                    gt_single_instance_tensor = gt_phenotypes_for_image_tensor[i]
+                    gt_single_instance_np = gt_single_instance_tensor.cpu().numpy().reshape(2)  # Ensure (2,)
+
+                    # Now we have a 1-to-1 pair: gt_single_instance_np and pred_phenotype_np
+                    # Both should be shape (2,)
+                    all_gt_phenotypes.append(gt_single_instance_np)
+                    all_pred_phenotypes.append(
+                        pred_phenotype_np)  # The same best prediction is paired with each GT instance from this image
+
+            except KeyError as e:
+                print(
+                    f"DEBUG: KeyError '{e}' processing image {target_dict.get('image_id')}. Skipping this image for phenotype metrics.")
+                continue
+            except Exception as e:
+                print(
+                    f"DEBUG: Error '{e}' processing image {target_dict.get('image_id')}. Skipping this image for phenotype metrics.")
+                continue
+
         evaluator_time = time.time() - evaluator_time
         metric_logger.update(model_time=model_time, evaluator_time=evaluator_time)
 
@@ -126,5 +178,24 @@ def evaluate(model, data_loader, device):
     # accumulate predictions from all images
     coco_evaluator.accumulate()
     coco_evaluator.summarize()
+
+    # Calculate R-squared and RMSE for phenotypes
+    phenotype_names = ["fresh_weight", "height"]
+    all_gt_phenotypes_np = np.array(all_gt_phenotypes)
+    all_pred_phenotypes_np = np.array(all_pred_phenotypes)
+    print("Phenotype Regression Metrics")
+    for i, name in enumerate(phenotype_names):
+        gt_values = all_gt_phenotypes_np[:, i]
+        pred_values = all_pred_phenotypes_np[:, i]
+        # Calculate R-squared and RMSE only if there's enough data and variance
+        if len(gt_values) > 1 and np.std(gt_values) > 1e-6:
+            r2 = r2_score(gt_values, pred_values)
+            rmse = np.sqrt(mean_squared_error(gt_values, pred_values))
+            mape = mean_absolute_percentage_error(gt_values, pred_values)
+            print(f" {name:<20} R-squared: {r2:.4f}  RMSE: {rmse:.4f}  MAPE: {mape * 100:.2f}%")
+        else:
+            print(f" {name}: Not enough data or variance to calculate R-squared/RMSE.")
+
     torch.set_num_threads(n_threads)
+
     return coco_evaluator

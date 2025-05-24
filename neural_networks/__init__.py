@@ -3,6 +3,8 @@ from functools import partial
 import torch
 import torch.nn as nn
 from typing import Any, Callable, Optional
+
+from torchvision.models.detection.backbone_utils import _validate_trainable_layers
 from torchvision.models.detection.ssd import SSD
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 
@@ -22,10 +24,12 @@ __all__ = [
 
 
 def lettuce_model(
-        load_weights = False,
+        weights: str = None,
+        trainable_backbone_layers: Optional[int] = None,
         **kwargs: Any
 ) -> Modified_SSDLiteMobileViT:
     'Loads a unimodal model for lettuce growth phenotype estimation'
+
     model = Modified_SSDLiteMobileViT(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
@@ -35,9 +39,16 @@ def lettuce_model(
         **kwargs
     )
 
-    if load_weights:
-        chkpt = torch.load(os.path.join(ROOT_DIR, "models/model_10.pth"), weights_only=False)
-        model.load_state_dict(chkpt["model"])
+    if trainable_backbone_layers is not None:
+        for parameter in model.model.encoder.parameters():
+            parameter.requires_grad_(trainable_backbone_layers > 0)
+        for parameter in model.model.extra_layers.parameters():
+            parameter.requires_grad_(trainable_backbone_layers > 0)
+
+    if weights is not None:
+        chkpt = torch.load(os.path.join(ROOT_DIR, weights), weights_only=False)
+        if "model" in chkpt: chkpt = chkpt["model"]
+        model.load_state_dict(chkpt)
 
     return model
 

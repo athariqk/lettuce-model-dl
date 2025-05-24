@@ -28,7 +28,7 @@ class CocoRGBDDataset(VisionDataset):
         self.coco = COCO(annFile)
         self.ids = list(sorted(self.coco.imgs.keys()))
         
-        self.target_keys = {"image_id", "boxes", "labels"}
+        self.target_keys = {"image_id", "boxes", "labels", "phenotypes"}
 
         self.depth_image_suffix = depth_image_suffix
 
@@ -114,7 +114,24 @@ class CocoRGBDDataset(VisionDataset):
         if "labels" in self.target_keys:
             target["labels"] = torch.tensor(batched_target["category_id"])
 
-        for target_key in self.target_keys - {"image_id", "boxes", "masks", "labels"}:
+        if "phenotypes" in self.target_keys:
+            fresh_weight_values = []
+            height_values = []
+
+            for attributes in batched_target.get("attributes", []):
+                fresh_weight_values.append(attributes.get("fresh_weight", 0.0))
+                height_values.append(attributes.get("height", 0.0))
+
+            # Stack the values to form a tensor of shape [num_instances, 2]
+            # where the first column is fresh_weight and second column is height
+            phenotypes = torch.tensor(
+                [[fw, h] for fw, h in zip(fresh_weight_values, height_values)],
+                dtype=torch.float32
+            )
+
+            target["phenotypes"] = phenotypes
+
+        for target_key in self.target_keys - {"image_id", "boxes", "masks", "labels", "phenotypes"}:
             target[target_key] = batched_target[target_key]
 
         return image, target

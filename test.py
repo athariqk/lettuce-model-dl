@@ -1,4 +1,5 @@
 import argparse
+import glob
 import os
 from typing import List, Optional
 import numpy as np
@@ -20,6 +21,7 @@ from neural_networks import lettuce_model
 def get_arguments():
     parser = argparse.ArgumentParser(description="SSDLite-MobileViT Inference")
     parser.add_argument("--model-path", type=str, help="Path to the pre-trained model")
+    parser.add_argument("--weights", type=str, help="Path to the weights to load")
     parser.add_argument("--config-file", type=str, help="Path to configuration file")
     parser.add_argument("--image-path", type=str, required=True, help="Path to input image")
     parser.add_argument("--output-dir", type=str, default="outputs", help="Directory to save outputs")
@@ -369,30 +371,20 @@ def predict_image(image_fname, **kwargs):
             orig_w=orig_w,
         )
 
-def main(args):
-    image = Image.open(args.image_path).convert('RGB')
+def predict_image_2(model, device, image_path):
+    image = Image.open(image_path).convert('RGB')
     orig_w, orig_h = image.size
     transform = transforms.Compose([
         transforms.ToTensor(),
     ])
     input_tensor = transform(image).unsqueeze(0)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # model = ssdlite320_mobilenet_v3_large(weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT)
-    # checkpoint = torch.load("model_95.pth", map_location=torch.device('cpu'), weights_only=False)
-    # model.load_state_dict(checkpoint["model"])
-    model = lettuce_model()
-    model.to(device)
-    model.eval()
-
     input_tensor = input_tensor.to(device)
 
     with torch.no_grad():
         detections = model(input_tensor)
 
     # Load the image using OpenCV for visualization
-    image_cv = cv2.imread(args.image_path)
+    image_cv = cv2.imread(image_path)
     image_cv = cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
 
     # Create figure and axis
@@ -404,8 +396,9 @@ def main(args):
         boxes = detection_pred["boxes"].cpu().numpy()
         scores = detection_pred["scores"].cpu().numpy()
         labels = detection_pred["labels"].cpu().numpy()
-        
-        for box, score, label in zip(boxes, scores, labels):
+        phenotypes = detection_pred["phenotypes"].cpu().numpy()
+
+        for box, score, label, phenotype in zip(boxes, scores, labels, phenotypes):
             if score < 0.5:
                 continue
 
@@ -424,16 +417,33 @@ def main(args):
 
             # Class name and confidence
             class_name = coco_names[int(label)] if not args.lettuce_model else lettuce_names[int(label)]
-            text = f"{class_name}: {score:.2f}"
+            text = f"{class_name}: {score:.2f}\nfw: {phenotype[0]:.2f}\nh: {phenotype[1]:.2f}"
             plt.text(
                 x_min, y_min - 5, text,
-                fontsize=12, color='white',
+                fontsize=8, color='white',
                 bbox=dict(facecolor='red', alpha=0.7)
             )
 
     # Display the image
     plt.axis('off')
     plt.show()
+
+def main(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # model = ssdlite320_mobilenet_v3_large(weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT)
+    # checkpoint = torch.load("model_95.pth", map_location=torch.device('cpu'), weights_only=False)
+    # model.load_state_dict(checkpoint["model"])
+    model = lettuce_model(weights=args.weights)
+    model.to(device)
+    model.eval()
+
+    if os.path.isdir(args.image_path):
+        files = glob.glob(f"{args.image_path}/*.png")
+        for file in files:
+            predict_image_2(model, device, file)
+    else:
+        predict_image_2(model, device, args.image_path)
 
 def main2(args):
     predict_image(args.image_path)

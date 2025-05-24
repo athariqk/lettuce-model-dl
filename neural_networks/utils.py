@@ -2,10 +2,11 @@ from typing import List, OrderedDict, Tuple
 import torch
 import torch.nn as nn
 
+
 def retrieve_out_channels(
-    model: nn.Module,
-    size: Tuple[int, int],
-    dual_backbone = False
+        model: nn.Module,
+        size: Tuple[int, int],
+        dual_backbone=False
 ) -> List[int]:
     """
     This method retrieves the number of output channels of a specific model.
@@ -38,6 +39,7 @@ def retrieve_out_channels(
 
     return out_channels
 
+
 def get_model(name: str, **kwargs) -> nn.Module:
     import neural_networks
 
@@ -53,7 +55,7 @@ def get_model(name: str, **kwargs) -> nn.Module:
         model = neural_networks.baseline_model("90")
     else:
         raise ValueError(f"Unexpected model name, got: {name}")
-    
+
     model.eval()
 
     return model

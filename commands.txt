@@ -9,3 +9,5 @@ COLAB NON-DISTRIBUTED
 
 DISTRIBUTED
 torchrun --nproc_per_node=8 train.py --dataset coco --model modified_ssdlite_mobilevit --epochs 660 --aspect-ratio-group-factor 3 --lr-scheduler cosineannealinglr --lr 0.15 --batch-size 34 --weight-decay 0.00004 --data-augmentation ssd
+
+ --ann-file instances_val.json --epoch 12 --batch-size 11 --rgb-image-subfolder val/rgb --depth-image-subfolder val/depth
