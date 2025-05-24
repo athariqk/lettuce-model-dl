@@ -49,6 +49,9 @@ def get_model(name: str, **kwargs) -> nn.Module:
         model = neural_networks.lettuce_model_unimodal(**kwargs)
     elif "lettuce_model" in name:
         model = neural_networks.lettuce_model(**kwargs)
+    elif "lettuce_model_no_pheno" in name:
+        kwargs["phenotype_loss_weight"] = 0.0
+        model = neural_networks.lettuce_model(**kwargs)
     elif "baseline_model_80" in name:
         model = neural_networks.baseline_model("80")
     elif "baseline_model_90" in name:

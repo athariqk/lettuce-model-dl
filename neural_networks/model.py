@@ -18,20 +18,21 @@ from my_utils import ROOT_DIR
 
 class Modified_SSDLiteMobileViT(nn.Module):
     """A modified SSDLite-MobileViT architecture for estimating lettuce growth phenotypes"""
-    
+
     def __init__(
-        self,
-        size: Tuple[int, int],
-        aspect_ratios: List[List[int]],
-        image_mean: Optional[List[float]] = None,
-        image_std: Optional[List[float]] = None,
-        score_thresh: float = 0.01,
-        nms_thresh: float = 0.5,
-        detections_per_img: int = 200,
-        topk_candidates: int = 400,
-        iou_thresh: float = 0.5,
-        pretrained: str = None,
-        **kwargs
+            self,
+            size: Tuple[int, int],
+            aspect_ratios: List[List[int]],
+            image_mean: Optional[List[float]] = None,
+            image_std: Optional[List[float]] = None,
+            score_thresh: float = 0.01,
+            nms_thresh: float = 0.5,
+            detections_per_img: int = 200,
+            topk_candidates: int = 400,
+            iou_thresh: float = 0.5,
+            pretrained: str = None,
+            phenotype_loss_weight: float = 0.3,
+            **kwargs
     ):
         super().__init__()
 
@@ -58,13 +59,15 @@ class Modified_SSDLiteMobileViT(nn.Module):
         self.nms_thresh = nms_thresh
         self.detections_per_img = detections_per_img
         self.topk_candidates = topk_candidates
-        
+
         self.neg_to_pos_ratio = 3
         self.label_smoothing = 0.3
 
-    @torch.jit.unused  
+        self.phenotype_loss_weight = phenotype_loss_weight
+
+    @torch.jit.unused
     def eager_outputs(
-        self, losses: Dict[str, Tensor], detections: List[Dict[str, Tensor]]
+            self, losses: Dict[str, Tensor], detections: List[Dict[str, Tensor]]
     ) -> Dict[str, Tensor] | List[Dict[str, Tensor]]:
         if self.training:
             return losses
@@ -72,10 +75,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
         return detections
 
     def compute_loss(
-        self,
-        head_outputs: Dict[str, Tensor],
-        targets: List[Dict[str, Tensor]],
-        anchors: List[Tensor],
+            self,
+            head_outputs: Dict[str, Tensor],
+            targets: List[Dict[str, Tensor]],
+            anchors: List[Tensor],
     ) -> Dict[str, Tensor]:
         """
         Computes SSD loss, similar to TorchVision's implementation.
@@ -176,22 +179,21 @@ class Modified_SSDLiteMobileViT(nn.Module):
         background_idxs = idx.sort(1)[1] < num_negative
 
         N = max(1, num_foreground)
-        phenotype_loss_weight = 0.3
         return {
             "bbox_loss": bbox_loss.sum() / N,
             "cls_loss": (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N,
-            "phenotype_loss": (phenotype_loss.sum() / N) * phenotype_loss_weight,
+            "phenotype_loss": (phenotype_loss.sum() / N) * self.phenotype_loss_weight,
         }
 
     def forward(
-        self, images: List[Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
+            self, images: List[Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
     ) -> Tuple[Dict[str, Tensor], List[Dict[str, Tensor]]] | Dict[str, Tensor] | List[Dict[str, Tensor]]:
         """
         Returns:
             A (Losses, Detections) tuple if in scripting, otherwise `Losses` if in training mode and `Detections`
             if not in training mode
         """
-        
+
         if self.training:
             if targets is None:
                 torch._assert(False, "targets should not be none when in training mode")
@@ -240,8 +242,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
         )
 
         head_outputs = {
-            "cls_logits": cls_logits,           # [B, N, NumClasses]
-            "bbox_regression": bbox_regression, # [B, N, 4]
+            "cls_logits": cls_logits,  # [B, N, NumClasses]
+            "bbox_regression": bbox_regression,  # [B, N, 4]
             "phenotypes_pred": phenotypes_pred  # [B, N, NumPhenotypes]
         }
 
@@ -259,7 +261,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
             detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
 
-        if torch.jit.is_scripting(): # type: ignore
+        if torch.jit.is_scripting():  # type: ignore
             if not self._has_warned:
                 warnings.warn("SSD always returns a (Losses, Detections) tuple in scripting")
                 self._has_warned = True
@@ -268,7 +270,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         return self.eager_outputs(losses, detections)
 
     def postprocess_detections(
-        self, head_outputs: Dict[str, Tensor], image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
+            self, head_outputs: Dict[str, Tensor], image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
     ) -> List[Dict[str, Tensor]]:
         bbox_regression = head_outputs["bbox_regression"]
         pred_scores = F.softmax(head_outputs["cls_logits"], dim=-1)
@@ -279,7 +281,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         detections: List[Dict[str, Tensor]] = []
 
-        for boxes, scores, phenotypes, anchors, image_shape in zip(bbox_regression, pred_scores, phenotypes_pred, image_anchors, image_shapes):
+        for boxes, scores, phenotypes, anchors, image_shape in zip(bbox_regression, pred_scores, phenotypes_pred,
+                                                                   image_anchors, image_shapes):
             boxes = self.box_coder.decode_single(boxes, anchors)
             boxes = box_ops.clip_boxes_to_image(boxes, image_shape)
 
