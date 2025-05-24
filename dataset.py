@@ -12,6 +12,52 @@ from PIL import Image
 from coco_utils import _coco_remove_images_without_annotations
 
 
+class RGBDepthTensor:
+    def __init__(self, x: torch.Tensor, y: torch.Tensor):
+        if not (isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor)):
+            raise TypeError("Both x and y must be a tensor.")
+        self._tensors = (x, y)
+
+    @property
+    def x(self):
+        """The x tensor."""
+        return self._tensors[0]
+
+    @property
+    def y(self):
+        """The y tensor."""
+        return self._tensors[1]
+
+    def to(self, *args, **kwargs):
+        self._tensors[0].to(*args, **kwargs)
+        self._tensors[1].to(*args, **kwargs)
+        return self
+
+    def __getitem__(self, index):
+        if index == 0 or index == 1:
+            return self._tensors[index]
+        raise IndexError("RGBDepthTensor index out of range (must be 0 or 1).")
+
+    def __len__(self):
+        return 2
+
+    def __str__(self):
+        return f"RGBDepthTensor(x={self.x}, y={self.y})"
+
+    def __repr__(self):
+        return f"RGBDepthTensor({self.x!r}, {self.y!r})"  # !r uses repr() for the elements
+
+    def __eq__(self, other):
+        if isinstance(other, RGBDepthTensor):
+            return torch.equal(self.x, other.x) and torch.equal(self.y, other.y)
+        if isinstance(other, tuple) and len(other) == 2 and \
+                isinstance(other[0], torch.Tensor) and isinstance(other[1], torch.Tensor):
+            return torch.equal(self.x, other[0]) and torch.equal(self.y, other[1])
+        return False
+
+    def __hash__(self):
+        raise TypeError(f"Unhashable type: '{self.__class__.__name__}' as it contains mutable tensors.")
+
 class CocoRGBDDataset(VisionDataset):
     def __init__(
         self,
@@ -37,43 +83,41 @@ class CocoRGBDDataset(VisionDataset):
         subfolder = "rgb" if "rgb" in info["image_type"] else "depth"
         return Image.open(os.path.join(self.root, subfolder, info["file_name"])).convert("RGB")
 
+    def _load_image_name(self, file_name: str, image_type: str) -> Image.Image:
+        subfolder = "rgb" if "rgb" in image_type else "depth"
+        return Image.open(os.path.join(self.root, subfolder, file_name)).convert("RGB")
+
     def _load_target(self, id: int) -> List[Any]:
         return self.coco.loadAnns(self.coco.getAnnIds(id))
 
     def _load_image_pair(self, id: int) -> Tuple[Image.Image, Optional[Image.Image]]:
         img_info = self.coco.loadImgs(id)[0]
+        img = self._load_image_name(img_info["file_name"], img_info["image_type"])
 
-        img = self._load_image(img_info["file_name"])
         if "paired_id" in img_info:
-            paired_img_info = self.coco.loadImgs(id)[img_info["paired_id"]]
-            path = os.path.join(self.root, paired_img_info["image_type"], paired_img_info["file_name"])
-            aux = Image.open(path).convert("RGB")
+            paired_img_info = self.coco.loadImgs(img_info["paired_id"])[0]
+            paired_img = self._load_image_name(paired_img_info["file_name"], paired_img_info["image_type"])
         else:
-            if "rgb" in img_info["image_type"]:
-                # Determine depth image path
-                base_name, _ = os.path.splitext(img_info["file_name"])
-                depth_file_name_short = f"Depth_{base_name.split('_')[1]}{self.depth_image_suffix}"
-                depth_path = os.path.join(self.root, "depth", depth_file_name_short)
-                aux = Image.open(depth_path).convert("RGB")
-            else:
-                aux = None
+            raise ValueError(f"Could not find paired image for {id}")
 
-        return img, aux
+        return img, paired_img
 
     def __getitem__(self, index: int) -> Tuple[Any, Any]:
         if not isinstance(index, int):
             raise ValueError(f"Index must be of type integer, got {type(index)} instead.")
 
         id = self.ids[index]
-        image = self._load_image(id)
+        image, paired_img = self._load_image_pair(id)
         target = self._load_target(id)
         
         image, target = self.wrap_to_tv2(index, (image, target))
 
-        if self.transforms is not None:
-            image, target = self.transforms(image, target)
+        image_pair = [image, paired_img]
 
-        return image, target
+        if self.transforms is not None:
+            image_pair, target = self.transforms(image_pair, target)
+
+        return RGBDepthTensor(image_pair[0], image_pair[1]), target
 
     def __len__(self) -> int:
         return len(self.ids)

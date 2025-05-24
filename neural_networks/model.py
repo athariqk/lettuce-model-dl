@@ -1,3 +1,4 @@
+import copy
 import math
 import os
 import warnings
@@ -13,7 +14,9 @@ from torchvision.models.detection._utils import SSDMatcher
 from typing import Dict, List, Optional, Tuple
 from cvnets.models.detection.ssd import SingleShotMaskDetector
 
+from dataset import RGBDepthTensor
 from my_utils import ROOT_DIR
+from neural_networks.blocks import AFF
 
 
 class Modified_SSDLiteMobileViT(nn.Module):
@@ -40,6 +43,12 @@ class Modified_SSDLiteMobileViT(nn.Module):
             pretrained = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_81nc_pretrained.pt")
 
         self.model: SingleShotMaskDetector = torch.load(pretrained, weights_only=False)
+
+        self.aux_encoder = copy.deepcopy(self.model.encoder)
+
+        self.aff_0 = AFF(self.model.enc_l3_channels)
+        self.aff_1 = AFF(self.model.enc_l4_channels)
+        self.aff_2 = AFF(self.model.enc_l5_channels)
 
         if image_mean is None:
             image_mean = [0.485, 0.456, 0.406]
@@ -183,9 +192,43 @@ class Modified_SSDLiteMobileViT(nn.Module):
             "phenotype_loss": (phenotype_loss.sum() / N) * phenotype_loss_weight,
         }
 
+    def get_backbone_features(self, x_main: Tensor, x_aux: Tensor) -> Dict[str, Tensor]:
+        aux_enc_features = self.aux_encoder.extract_end_points_all(x_aux)
+
+        x = self.model.encoder.conv_1(x_main)
+        x = self.model.encoder.layer_1(x)
+        x = self.model.encoder.layer_2(x)
+        x = self.model.encoder.layer_3(x)
+        out_l3 = self.aff_0(x, aux_enc_features["out_l3"])
+        x = self.model.encoder.layer_4(out_l3)
+        out_l4 = self.aff_1(x, aux_enc_features["out_l4"])
+        x = self.model.encoder.layer_5(out_l4)
+        out_l5 = self.aff_2(x, aux_enc_features["out_l5"])
+
+        end_points: Dict = dict()
+        for idx, os in enumerate(self.model.output_strides):
+            if os == 8:
+                end_points["os_{}".format(os)] = out_l3
+            elif os == 16:
+                end_points["os_{}".format(os)] = out_l4
+            elif os == 32:
+                end_points["os_{}".format(os)] = out_l5
+            else:
+                x = end_points["os_{}".format(self.model.output_strides[idx - 1])]
+                end_points["os_{}".format(os)] = self.model.extra_layers["os_{}".format(os)](
+                    x
+                )
+
+        return end_points
+
     def forward(
-        self, images: List[Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
-    ) -> Tuple[Dict[str, Tensor], List[Dict[str, Tensor]]] | Dict[str, Tensor] | List[Dict[str, Tensor]]:
+        self, images: List[RGBDepthTensor], targets: Optional[List[Dict[str, Tensor]]] = None
+    ) -> (
+            Tuple[Dict[str, Tensor],
+            List[Dict[str, Tensor]]] |
+            Dict[str, Tensor] |
+            List[Dict[str, Tensor]]
+    ):
         """
         Returns:
             A (Losses, Detections) tuple if in scripting, otherwise `Losses` if in training mode and `Detections`
@@ -209,15 +252,19 @@ class Modified_SSDLiteMobileViT(nn.Module):
         # get the original image sizes
         original_image_sizes: List[Tuple[int, int]] = []
         for img in images:
-            val = img.shape[-2:]
+            val = img.x.shape[-2:]
             torch._assert(
                 len(val) == 2,
-                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
+                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.x.shape[-2:]}",
             )
             original_image_sizes.append((val[0], val[1]))
 
+        image_tensors: List[Tensor] = [item.x for item in images]
+        aux_tensors: List[Tensor] = [item.y for item in images]
+
         # transform the input
-        images_transformed, targets_transformed = self.transform(images, targets)
+        images_transformed, targets_transformed = self.transform(image_tensors, targets)
+        aux_images_transformed, _ = self.transform(aux_tensors)
 
         # Check for degenerate boxes
         if targets_transformed is not None:
@@ -233,7 +280,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
                         f" Found invalid box {degen_bb} for target at index {target_idx}.",
                     )
 
-        features = self.model.get_backbone_features(images_transformed.tensors)
+        features = self.get_backbone_features(images_transformed.tensors, aux_images_transformed.tensors)
 
         cls_logits, bbox_regression, _, phenotypes_pred = self.model.ssd_forward(
             features, device=images_transformed.tensors.device
