@@ -31,7 +31,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             topk_candidates: int = 400,
             iou_thresh: float = 0.5,
             pretrained: str = None,
-            phenotype_loss_weight: float = 0.3,
+            phenotype_loss_weight: float = 0.0001,
             **kwargs
     ):
         super().__init__()
