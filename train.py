@@ -343,7 +343,7 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
             if args.output_dir and utils.is_main_process():
                 with open(os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt"), "w") as f:
                     f.write(
-                        f"K-Fold Phenotype Regression Summary ({args.k_folds} folds, seed {args.seed})\nMean Performance (last epoch of each fold):\n")
+                        f"K-Fold Phenotype Regression Summary ({args.k_folds} folds\nMean Performance (last epoch of each fold):\n")
                     for p_key in phenotype_keys:
                         f.write(f" Phenotype: {p_key}\n")
                         for m_key in metric_keys:
