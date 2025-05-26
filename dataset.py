@@ -17,7 +17,7 @@ class CocoRGBDDataset(VisionDataset):
         self,
         root: Union[str, Path],
         annFile: str,
-        depth_image_suffix: str,
+        depth_image_suffix: str = "",
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         transforms: Optional[Callable] = None,
@@ -34,7 +34,7 @@ class CocoRGBDDataset(VisionDataset):
 
     def _load_image(self, id: int) -> Image.Image:
         info = self.coco.loadImgs(id)[0]
-        subfolder = "rgb" if "rgb" in info["image_type"] else "depth"
+        subfolder = "rgb"
         return Image.open(os.path.join(self.root, subfolder, info["file_name"])).convert("RGB")
 
     def _load_target(self, id: int) -> List[Any]:
@@ -52,7 +52,8 @@ class CocoRGBDDataset(VisionDataset):
             if "rgb" in img_info["image_type"]:
                 # Determine depth image path
                 base_name, _ = os.path.splitext(img_info["file_name"])
-                depth_file_name_short = f"Depth_{base_name.split('_')[1]}{self.depth_image_suffix}"
+                numbers = ''.join([char for char in base_name if char.isdigit()])
+                depth_file_name_short = f"depth{numbers}{self.depth_image_suffix}"
                 depth_path = os.path.join(self.root, "depth", depth_file_name_short)
                 aux = Image.open(depth_path).convert("RGB")
             else:

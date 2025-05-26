@@ -24,7 +24,6 @@ __all__ = [
 
 
 def lettuce_model(
-        weights: str = None,
         trainable_backbone_layers: Optional[int] = None,
         **kwargs: Any
 ) -> Modified_SSDLiteMobileViT:
@@ -44,12 +43,6 @@ def lettuce_model(
             parameter.requires_grad_(trainable_backbone_layers >= 2)
         for parameter in model.model.extra_layers.parameters():
             parameter.requires_grad_(trainable_backbone_layers >= 1)
-
-    if weights is not None:
-        chkpt = torch.load(os.path.join(ROOT_DIR, weights), weights_only=False)
-        if "model" in chkpt: chkpt = chkpt["model"]
-        model.load_state_dict(chkpt)
-        print("loaded weights")
 
     return model
 
