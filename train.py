@@ -19,9 +19,11 @@ from transforms import SimpleCopyPaste
 import presets
 import my_utils as utils
 
+
 def copypaste_collate_fn(batch):
     copypaste = SimpleCopyPaste(blending=True, resize_interpolation=InterpolationMode.BILINEAR)
     return copypaste(*utils.collate_fn(batch))
+
 
 def get_dataset(is_train, args):
     image_set = "train" if is_train else "val"
@@ -36,6 +38,7 @@ def get_dataset(is_train, args):
     ds = ds_fn(p, image_set=image_set, transforms=get_transform(is_train, args), use_v2=args.use_v2)
     return ds, num_classes
 
+
 def get_transform(is_train, args):
     if is_train:
         return presets.DetectionPresetTrain(
@@ -47,6 +50,7 @@ def get_transform(is_train, args):
         return lambda img, target: (trans(img), target)
     else:
         return presets.DetectionPresetEval(backend=args.backend, use_v2=args.use_v2)
+
 
 def get_args_parser(add_help=True):
     import argparse
@@ -162,9 +166,11 @@ def get_args_parser(add_help=True):
 
     return parser
 
+
 def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, device):
     kf = KFold(n_splits=args.k_folds, shuffle=True)
     fold_results = []
+    fold_phenotype_metrics = []
 
     print(f"Starting {args.k_folds}-Fold Cross-Validation")
     for fold, (train_idx, test_idx) in enumerate(kf.split(full_dataset)):
@@ -189,10 +195,10 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                 print(
                     f"Warning: Could not create aspect ratio groups for fold {fold + 1} (Error: {e}). Using standard BatchSampler.")
                 train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size,
-                                                                         drop_last=True)
+                                                                    drop_last=True)
         else:
             train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size,
-                                                                     drop_last=True)
+                                                                drop_last=True)
 
         train_collate_fn_fold = utils.collate_fn
         if args.use_copypaste:
@@ -238,7 +244,7 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                 utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
 
             # evaluate after every epoch
-            evaluator = evaluate(model, data_loader_test, device=device)
+            evaluator, pheno_metrics = evaluate(model, data_loader_test, device=device)
 
             if evaluator and evaluator.iou_types:
                 first_iou_type = evaluator.iou_types[0]  # Typically "bbox"
@@ -250,6 +256,12 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                             fold_results[fold] = fold_epoch_stats  # update with latest epoch
                         else:
                             fold_results.append(fold_epoch_stats)
+
+            if pheno_metrics:
+                if len(fold_phenotype_metrics) > fold:  # if entry for this fold exists
+                    fold_phenotype_metrics[fold] = pheno_metrics  # update with latest epoch
+                else:
+                    fold_phenotype_metrics.append(pheno_metrics)
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -295,6 +307,63 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                 print("No valid stats collected from folds to average.")
         else:
             print("No results collected from K-Folds.")
+
+        if fold_phenotype_metrics:
+            print("\nAverage K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
+            aggregated_pheno_results = {}
+            phenotype_keys = ["fresh_weight", "height"]  # From engine.py
+            metric_keys = ["r2", "rmse", "mape"]
+
+            for p_key in phenotype_keys:
+                aggregated_pheno_results[p_key] = {}
+                for m_key in metric_keys:
+                    # Collect valid (non-NaN) metrics for this phenotype and metric type from all folds
+                    values = [
+                        fold_data[p_key][m_key]
+                        for fold_data in fold_phenotype_metrics
+                        if
+                        fold_data and p_key in fold_data and m_key in fold_data[p_key] and not np.isnan(
+                            fold_data[p_key][m_key])
+                    ]
+                    if values:
+                        mean_val = np.mean(values)
+                        std_val = np.std(values)
+                        aggregated_pheno_results[p_key][f'{m_key}_mean'] = mean_val
+                        aggregated_pheno_results[p_key][f'{m_key}_std'] = std_val
+                        if m_key == 'mape':  # MAPE is printed as percentage
+                            print(
+                                f"  {p_key:<15} {m_key:<10}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%")
+                        else:
+                            print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val:.4f}, Std = {std_val:.4f}")
+                    else:
+                        aggregated_pheno_results[p_key][f'{m_key}_mean'] = np.nan  # Store NaN if no valid data
+                        aggregated_pheno_results[p_key][f'{m_key}_std'] = np.nan
+                        print(f"  {p_key:<15} {m_key:<10}: Not enough valid data across folds.")
+
+            # Save Phenotype summary
+            if args.output_dir and utils.is_main_process():
+                with open(os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt"), "w") as f:
+                    f.write(
+                        f"K-Fold Phenotype Regression Summary ({args.k_folds} folds, seed {args.seed})\nMean Performance (last epoch of each fold):\n")
+                    for p_key in phenotype_keys:
+                        f.write(f" Phenotype: {p_key}\n")
+                        for m_key in metric_keys:
+                            mean_val = aggregated_pheno_results[p_key].get(f'{m_key}_mean', np.nan)
+                            std_val = aggregated_pheno_results[p_key].get(f'{m_key}_std', np.nan)
+                            if not np.isnan(mean_val):
+                                if m_key == 'mape':
+                                    f.write(
+                                        f"    {m_key:<8}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%\n")
+                                else:
+                                    f.write(f"    {m_key:<8}: Mean = {mean_val:.4f}, Std = {std_val:.4f}\n")
+                            else:
+                                f.write(f"    {m_key:<8}: Not enough valid data across folds.\n")
+                np.savez(os.path.join(args.output_dir, "kfold_phenotype_stats.npz"),
+                         aggregated_metrics=aggregated_pheno_results,
+                         all_fold_metrics=fold_phenotype_metrics)
+        else:
+            print("No Phenotype metrics collected from K-Folds.")
+
 
 def standard_training(args, model, dataset, dataset_test, optimizer, lr_scheduler, scaler, device):
     print("Creating data loaders")
@@ -374,6 +443,7 @@ def standard_training(args, model, dataset, dataset_test, optimizer, lr_schedule
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"Training time {total_time_str}")
 
+
 def main(args):
     if args.backend.lower() == "tv_tensor" and not args.use_v2:
         raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
@@ -409,7 +479,7 @@ def main(args):
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
 
     model = get_model(args.model, num_classes=num_classes, **kwargs)
-    
+
     if args.saved_weights:
         print("Loading saved weights: {}".format(args.saved_weights))
         weights = torch.load(args.saved_weights, weights_only=False)["model"]
@@ -452,11 +522,13 @@ def main(args):
             f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
         )
 
+    model.train()
     if args.k_folds > 1:
         k_fold_training(args, model, dataset, optimizer, lr_scheduler, scaler, device)
     else:
         dataset_test, _ = get_dataset(is_train=False, args=args)
         standard_training(args, model, dataset, dataset_test, optimizer, lr_scheduler, scaler, device)
+
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()
