@@ -1,9 +1,13 @@
 import datetime
 import os
 import time
+
+import numpy as np
 import torch
 import torchvision
 import torchvision.ops._utils
+from sklearn.model_selection import KFold
+
 from coco_utils import get_coco, get_coco_kp, get_coco_online
 from dataset import get_rgbd_data
 from engine import evaluate, train_one_epoch
@@ -153,35 +157,140 @@ def get_args_parser(add_help=True):
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
 
+    parser.add_argument("--k-folds", type=int, default=0,
+                        help="Number of folds for K-Fold cross-validation. Set to 0 or 1 to disable K-Fold and use standard train/val split.")
+
     return parser
 
-def main(args):
-    if args.backend.lower() == "tv_tensor" and not args.use_v2:
-        raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
-    if args.dataset not in ("coco", "coco_kp", "coco_online", "coco_rgbd"):
-        raise ValueError(f"Dataset should be coco, coco_kp, coco_online or coco-rgbd, got {args.dataset}")
-    if "keypoint" in args.model and args.dataset != "coco_kp":
-        raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")
-    if args.dataset == "coco_kp" and args.use_v2:
-        raise ValueError("KeyPoint detection doesn't support V2 transforms yet")
+def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, device):
+    kf = KFold(n_splits=args.k_folds, shuffle=True)
+    fold_results = []
 
-    if args.output_dir:
-        utils.mkdir(args.output_dir)
+    print(f"Starting {args.k_folds}-Fold Cross-Validation")
+    for fold, (train_idx, test_idx) in enumerate(kf.split(full_dataset)):
+        print(f"Fold {fold + 1}/{args.k_folds}")
 
-    utils.init_distributed_mode(args)
-    print(args)
+        train_subset = torch.utils.data.Subset(full_dataset, train_idx)
+        test_subset = torch.utils.data.Subset(full_dataset, test_idx)
 
-    device = torch.device(args.device)
+        if args.distributed:
+            # Distributed samplers need to be aware of the subset
+            train_sampler = torch.utils.data.DistributedSampler(train_subset)
+            test_sampler = torch.utils.data.DistributedSampler(test_subset, shuffle=False)
+        else:
+            train_sampler = torch.utils.data.RandomSampler(train_subset)
+            test_sampler = torch.utils.data.SequentialSampler(test_subset)
 
-    if args.use_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True)
+        if args.aspect_ratio_group_factor >= 0:
+            try:
+                group_ids = create_aspect_ratio_groups(train_subset, k=args.aspect_ratio_group_factor)
+                train_batch_sampler = GroupedBatchSampler(train_sampler, group_ids, args.batch_size)
+            except Exception as e:
+                print(
+                    f"Warning: Could not create aspect ratio groups for fold {fold + 1} (Error: {e}). Using standard BatchSampler.")
+                train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size,
+                                                                         drop_last=True)
+        else:
+            train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size,
+                                                                     drop_last=True)
 
-    # Data loading code
-    print("Loading data")
+        train_collate_fn_fold = utils.collate_fn
+        if args.use_copypaste:
+            if args.data_augmentation != "lsj":
+                raise RuntimeError("SimpleCopyPaste only supports 'lsj' data augmentation.")
+            train_collate_fn_fold = copypaste_collate_fn
 
-    dataset, num_classes = get_dataset(is_train=True, args=args)
-    dataset_test, _ = get_dataset(is_train=False, args=args)
+        data_loader_train = torch.utils.data.DataLoader(
+            train_subset, batch_sampler=train_batch_sampler, num_workers=args.workers,
+            collate_fn=train_collate_fn_fold
+        )
+        data_loader_test = torch.utils.data.DataLoader(
+            test_subset, batch_size=1, sampler=test_sampler, num_workers=args.workers, collate_fn=utils.collate_fn
+            # Standard collate for eval
+        )
 
+        print(f"Fold {fold + 1}: Train size: {len(train_subset)}, Val size: {len(test_subset)}")
+
+        model_without_ddp = model
+        if args.distributed:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+            model_without_ddp = model.module
+
+        print(f"Start training for Fold {fold + 1}")
+        start_time = time.time()
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                train_sampler.set_epoch(epoch)
+            train_one_epoch(model, optimizer, data_loader_train, device, epoch, args.print_freq, scaler)
+            lr_scheduler.step()
+            if args.output_dir:
+                checkpoint = {
+                    "model": model_without_ddp.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "lr_scheduler": lr_scheduler.state_dict(),
+                    "args": args,
+                    "epoch": epoch,
+                    "fold": fold + 1
+                }
+                if scaler:
+                    checkpoint["scaler"] = scaler.state_dict()
+                utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
+                utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+
+            # evaluate after every epoch
+            evaluator = evaluate(model, data_loader_test, device=device)
+
+            if evaluator and evaluator.iou_types:
+                first_iou_type = evaluator.iou_types[0]  # Typically "bbox"
+                if first_iou_type in evaluator.coco_eval:
+                    eval_obj = evaluator.coco_eval[first_iou_type]
+                    fold_epoch_stats = eval_obj.stats
+                    if fold_epoch_stats is not None and len(fold_epoch_stats) > 0:
+                        if len(fold_results) > fold:  # if entry for this fold exists
+                            fold_results[fold] = fold_epoch_stats  # update with latest epoch
+                        else:
+                            fold_results.append(fold_epoch_stats)
+
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        print(f"Training time {total_time_str}")
+
+        if fold_results:
+            valid_fold_stats = [stats for stats in fold_results if stats is not None and len(stats) > 0]
+            if valid_fold_stats:
+                all_fold_stats_np = np.array(valid_fold_stats)
+                mean_stats = np.mean(all_fold_stats_np, axis=0)
+                std_stats = np.std(all_fold_stats_np, axis=0)
+                print("\nAverage K-Fold Performance Metrics (based on last epoch of each fold):")
+                metric_names = [
+                    "AP @[IoU=0.50:0.95|area=all|maxDets=100]", "AP @[IoU=0.50|area=all|maxDets=100]",
+                    "AP @[IoU=0.75|area=all|maxDets=100]", "AP @[IoU=0.50:0.95|area=small|maxDets=100]",
+                    "AP @[IoU=0.50:0.95|area=medium|maxDets=100]", "AP @[IoU=0.50:0.95|area=large|maxDets=100]",
+                    "AR @[IoU=0.50:0.95|area=all|maxDets=1]", "AR @[IoU=0.50:0.95|area=all|maxDets=10]",
+                    "AR @[IoU=0.50:0.95|area=all|maxDets=100]", "AR @[IoU=0.50:0.95|area=small|maxDets=100]",
+                    "AR @[IoU=0.50:0.95|area=medium|maxDets=100]", "AR @[IoU=0.50:0.95|area=large|maxDets=100]",
+                ]
+                for i, name in enumerate(metric_names):
+                    if i < len(mean_stats):
+                        print(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}")
+
+                if args.output_dir:
+                    results_file = os.path.join(args.output_dir, "kfold_summary_stats.txt")
+                    with open(results_file, "w") as f:
+                        f.write(f"K-Fold Cross-Validation Summary ({args.k_folds} folds, seed {args.seed})\n")
+                        f.write("Mean Performance Metrics (based on last epoch of each fold):\n")
+                        for i, name in enumerate(metric_names):
+                            if i < len(mean_stats):
+                                f.write(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}\n")
+                        np.savez(os.path.join(args.output_dir, "kfold_stats.npz"), mean_stats=mean_stats,
+                                 std_stats=std_stats, all_fold_stats=all_fold_stats_np)
+                    print(f"K-Fold summary saved to {results_file}")
+            else:
+                print("No valid stats collected from folds to average.")
+        else:
+            print("No results collected from K-Folds.")
+
+def standard_training(args, model, dataset, dataset_test, optimizer, lr_scheduler, scaler, device):
     print("Creating data loaders")
     if args.distributed:
         train_sampler = torch.utils.data.DistributedSampler(dataset)
@@ -213,6 +322,78 @@ def main(args):
         sampler=test_sampler, num_workers=args.workers,
         collate_fn=train_collate_fn)
 
+    model_without_ddp = model
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model_without_ddp = model.module
+
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+        model_without_ddp.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+        args.start_epoch = checkpoint["epoch"] + 1
+        if scaler:
+            scaler.load_state_dict(checkpoint["scaler"])
+
+    if args.test_only:
+        torch.backends.cudnn.deterministic = True
+        evaluate(model, data_loader_test, device=device)
+        return
+
+    print("Starting standard training (K-Fold is disabled or k_folds <= 1).")
+    start_time = time.time()
+    for epoch in range(args.start_epoch, args.epochs):
+        if args.distributed:
+            train_sampler.set_epoch(epoch)
+        train_one_epoch(model, optimizer, data_loader, device, epoch, args.print_freq, scaler)
+        lr_scheduler.step()
+        if args.output_dir:
+            checkpoint = {
+                "model": model_without_ddp.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "lr_scheduler": lr_scheduler.state_dict(),
+                "args": args,
+                "epoch": epoch,
+            }
+            if scaler:
+                checkpoint["scaler"] = scaler.state_dict()
+            utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
+            utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+
+        # evaluate after every epoch
+        evaluate(model, data_loader_test, device=device)
+
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    print(f"Training time {total_time_str}")
+
+def main(args):
+    if args.backend.lower() == "tv_tensor" and not args.use_v2:
+        raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
+    if args.dataset not in ("coco", "coco_kp", "coco_online", "coco_rgbd"):
+        raise ValueError(f"Dataset should be coco, coco_kp, coco_online or coco-rgbd, got {args.dataset}")
+    if "keypoint" in args.model and args.dataset != "coco_kp":
+        raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")
+    if args.dataset == "coco_kp" and args.use_v2:
+        raise ValueError("KeyPoint detection doesn't support V2 transforms yet")
+
+    if args.output_dir:
+        utils.mkdir(args.output_dir)
+
+    utils.init_distributed_mode(args)
+    print(args)
+
+    device = torch.device(args.device)
+
+    if args.use_deterministic_algorithms:
+        torch.use_deterministic_algorithms(True)
+
+    # Data loading code
+    print("Loading data")
+
+    dataset, num_classes = get_dataset(is_train=True, args=args)
+
     print("Creating model")
     kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
     if args.data_augmentation in ["multiscale", "lsj"]:
@@ -231,11 +412,6 @@ def main(args):
     model.to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
-    model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
 
     if args.norm_weight_decay is None:
         parameters = [p for p in model.parameters() if p.requires_grad]
@@ -270,46 +446,11 @@ def main(args):
             f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
         )
 
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
-        model_without_ddp.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-        args.start_epoch = checkpoint["epoch"] + 1
-        if scaler:
-            scaler.load_state_dict(checkpoint["scaler"])
-
-    if args.test_only:
-        torch.backends.cudnn.deterministic = True
-        evaluate(model, data_loader_test, device=device)
-        return
-
-    print("Start training")
-    start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
-        train_one_epoch(model, optimizer, data_loader, device, epoch, args.print_freq, scaler)
-        lr_scheduler.step()
-        if args.output_dir:
-            checkpoint = {
-                "model": model_without_ddp.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "lr_scheduler": lr_scheduler.state_dict(),
-                "args": args,
-                "epoch": epoch,
-            }
-            if scaler:
-                checkpoint["scaler"] = scaler.state_dict()
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-
-        # evaluate after every epoch
-        evaluate(model, data_loader_test, device=device)
-
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print(f"Training time {total_time_str}")
+    if args.k_folds > 1:
+        k_fold_training(args, model, dataset, optimizer, lr_scheduler, scaler, device)
+    else:
+        dataset_test, _ = get_dataset(is_train=False, args=args)
+        standard_training(args, model, dataset, dataset_test, optimizer, lr_scheduler, scaler, device)
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()

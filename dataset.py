@@ -15,8 +15,8 @@ from coco_utils import _coco_remove_images_without_annotations
 class CocoRGBDDataset(VisionDataset):
     def __init__(
         self,
-        root: Union[str, Path],
-        annFile: str,
+        root: Union[Union[str, list[str], Union[Path, list[Path]]]],
+        ann_file: str,
         depth_image_suffix: str = "",
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
@@ -25,7 +25,7 @@ class CocoRGBDDataset(VisionDataset):
         super().__init__(root, transforms, transform, target_transform)
         from pycocotools.coco import COCO
         
-        self.coco = COCO(annFile)
+        self.coco = COCO(ann_file)
         self.ids = list(sorted(self.coco.imgs.keys()))
         
         self.target_keys = {"image_id", "boxes", "labels", "phenotypes"}
@@ -140,6 +140,7 @@ class CocoRGBDDataset(VisionDataset):
     def get_height_and_width(self, index: int) -> Tuple[int, int]:
         img_info = self.coco.imgs[self.ids[index]]
         return img_info["height"], img_info["width"]
+
 
 def get_rgbd_data(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False):
     anno_file_template = "{}_{}.json"
