@@ -263,12 +263,18 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                 std_stats = np.std(all_fold_stats_np, axis=0)
                 print("\nAverage K-Fold Performance Metrics (based on last epoch of each fold):")
                 metric_names = [
-                    "AP @[IoU=0.50:0.95|area=all|maxDets=100]", "AP @[IoU=0.50|area=all|maxDets=100]",
-                    "AP @[IoU=0.75|area=all|maxDets=100]", "AP @[IoU=0.50:0.95|area=small|maxDets=100]",
-                    "AP @[IoU=0.50:0.95|area=medium|maxDets=100]", "AP @[IoU=0.50:0.95|area=large|maxDets=100]",
-                    "AR @[IoU=0.50:0.95|area=all|maxDets=1]", "AR @[IoU=0.50:0.95|area=all|maxDets=10]",
-                    "AR @[IoU=0.50:0.95|area=all|maxDets=100]", "AR @[IoU=0.50:0.95|area=small|maxDets=100]",
-                    "AR @[IoU=0.50:0.95|area=medium|maxDets=100]", "AR @[IoU=0.50:0.95|area=large|maxDets=100]",
+                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
+                    "Average Precision  (AP) @[ IoU=0.50      |area=    all| maxDets=100 ]",
+                    "Average Precision  (AP) @[ IoU=0.75      |area=    all| maxDets=100 ]",
+                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
+                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
+                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
+                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=  1 ]",
+                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets= 10 ]",
+                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
+                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
+                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
+                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
                 ]
                 for i, name in enumerate(metric_names):
                     if i < len(mean_stats):
@@ -277,7 +283,7 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                 if args.output_dir:
                     results_file = os.path.join(args.output_dir, "kfold_summary_stats.txt")
                     with open(results_file, "w") as f:
-                        f.write(f"K-Fold Cross-Validation Summary ({args.k_folds} folds, seed {args.seed})\n")
+                        f.write(f"K-Fold Cross-Validation Summary ({args.k_folds} folds)\n")
                         f.write("Mean Performance Metrics (based on last epoch of each fold):\n")
                         for i, name in enumerate(metric_names):
                             if i < len(mean_stats):
