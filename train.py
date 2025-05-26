@@ -308,7 +308,7 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
             print("No results collected from K-Folds.")
 
         if fold_phenotype_metrics:
-            print("\nAverage K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
+            print("Average K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
             aggregated_pheno_results = {}
             phenotype_keys = ["fresh_weight", "height"]  # From engine.py
             metric_keys = ["r2", "rmse", "mape"]
