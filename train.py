@@ -219,7 +219,6 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
 
         model_without_ddp = model
         if args.distributed:
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
             model_without_ddp = model.module
 
         print(f"Start training for Fold {fold + 1}")
@@ -399,7 +398,6 @@ def standard_training(args, model, dataset, dataset_test, optimizer, lr_schedule
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     if args.resume:
@@ -488,6 +486,9 @@ def main(args):
     model.to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
 
     if args.norm_weight_decay is None:
         parameters = [p for p in model.parameters() if p.requires_grad]
