@@ -1,4 +1,3 @@
-import copy
 import math
 import os
 import warnings
@@ -21,20 +20,21 @@ from neural_networks.blocks import AFF
 
 class Modified_SSDLiteMobileViT(nn.Module):
     """A modified SSDLite-MobileViT architecture for estimating lettuce growth phenotypes"""
-    
+
     def __init__(
-        self,
-        size: Tuple[int, int],
-        aspect_ratios: List[List[int]],
-        image_mean: Optional[List[float]] = None,
-        image_std: Optional[List[float]] = None,
-        score_thresh: float = 0.01,
-        nms_thresh: float = 0.5,
-        detections_per_img: int = 200,
-        topk_candidates: int = 400,
-        iou_thresh: float = 0.5,
-        pretrained: str = None,
-        **kwargs
+            self,
+            size: Tuple[int, int],
+            aspect_ratios: List[List[int]],
+            image_mean: Optional[List[float]] = None,
+            image_std: Optional[List[float]] = None,
+            score_thresh: float = 0.01,
+            nms_thresh: float = 0.5,
+            detections_per_img: int = 200,
+            topk_candidates: int = 400,
+            iou_thresh: float = 0.5,
+            pretrained: str = None,
+            phenotype_loss_weight: float = 0.0001,
+            **kwargs
     ):
         super().__init__()
 
@@ -67,13 +67,15 @@ class Modified_SSDLiteMobileViT(nn.Module):
         self.nms_thresh = nms_thresh
         self.detections_per_img = detections_per_img
         self.topk_candidates = topk_candidates
-        
+
         self.neg_to_pos_ratio = 3
         self.label_smoothing = 0.3
 
-    @torch.jit.unused  
+        self.phenotype_loss_weight = phenotype_loss_weight
+
+    @torch.jit.unused
     def eager_outputs(
-        self, losses: Dict[str, Tensor], detections: List[Dict[str, Tensor]]
+            self, losses: Dict[str, Tensor], detections: List[Dict[str, Tensor]]
     ) -> Dict[str, Tensor] | List[Dict[str, Tensor]]:
         if self.training:
             return losses
@@ -81,10 +83,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
         return detections
 
     def compute_loss(
-        self,
-        head_outputs: Dict[str, Tensor],
-        targets: List[Dict[str, Tensor]],
-        anchors: List[Tensor],
+            self,
+            head_outputs: Dict[str, Tensor],
+            targets: List[Dict[str, Tensor]],
+            anchors: List[Tensor],
     ) -> Dict[str, Tensor]:
         """
         Computes SSD loss, similar to TorchVision's implementation.
@@ -185,11 +187,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
         background_idxs = idx.sort(1)[1] < num_negative
 
         N = max(1, num_foreground)
-        phenotype_loss_weight = 0.3
         return {
             "bbox_loss": bbox_loss.sum() / N,
             "cls_loss": (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N,
-            "phenotype_loss": (phenotype_loss.sum() / N) * phenotype_loss_weight,
+            "phenotype_loss": (phenotype_loss.sum() / N) * self.phenotype_loss_weight,
         }
 
     def get_backbone_features(self, x_main: Tensor, x_aux: Tensor) -> Dict[str, Tensor]:
@@ -326,7 +327,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         detections: List[Dict[str, Tensor]] = []
 
-        for boxes, scores, phenotypes, anchors, image_shape in zip(bbox_regression, pred_scores, phenotypes_pred, image_anchors, image_shapes):
+        for boxes, scores, phenotypes, anchors, image_shape in zip(bbox_regression, pred_scores, phenotypes_pred,
+                                                                   image_anchors, image_shapes):
             boxes = self.box_coder.decode_single(boxes, anchors)
             boxes = box_ops.clip_boxes_to_image(boxes, image_shape)
 

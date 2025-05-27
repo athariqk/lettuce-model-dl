@@ -43,15 +43,18 @@ def retrieve_out_channels(
 def get_model(name: str, **kwargs) -> nn.Module:
     import neural_networks
 
-    if "lettuce_model_multimodal" in name:
+    if "lettuce_model_multimodal" == name:
         model = neural_networks.lettuce_model_multimodal(**kwargs)
-    elif "lettuce_model_unimodal" in name:
+    elif "lettuce_model_unimodal" == name:
         model = neural_networks.lettuce_model_unimodal(**kwargs)
-    elif "lettuce_model" in name:
+    elif "lettuce_model" == name:
         model = neural_networks.lettuce_model(**kwargs)
-    elif "baseline_model_80" in name:
+    elif "lettuce_model_no_pheno" == name:
+        kwargs["phenotype_loss_weight"] = 0.0
+        model = neural_networks.lettuce_model(**kwargs)
+    elif "baseline_model_80" == name:
         model = neural_networks.baseline_model("80")
-    elif "baseline_model_90" in name:
+    elif "baseline_model_90" == name:
         model = neural_networks.baseline_model("90")
     else:
         raise ValueError(f"Unexpected model name, got: {name}")

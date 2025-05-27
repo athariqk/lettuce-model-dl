@@ -434,12 +434,14 @@ def main(args):
     # model = ssdlite320_mobilenet_v3_large(weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT)
     # checkpoint = torch.load("model_95.pth", map_location=torch.device('cpu'), weights_only=False)
     # model.load_state_dict(checkpoint["model"])
-    model = lettuce_model(weights=args.weights)
+    model = lettuce_model()
+    weights = torch.load(args.weights, map_location="cpu", weights_only=False)["model"]
+    model.load_state_dict(weights)
     model.to(device)
     model.eval()
 
     if os.path.isdir(args.image_path):
-        files = glob.glob(f"{args.image_path}/*.png")
+        files = glob.glob(f"{args.image_path}/*.*")
         for file in files:
             predict_image_2(model, device, file)
     else:
