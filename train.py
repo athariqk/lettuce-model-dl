@@ -326,102 +326,102 @@ def k_fold_training(args, num_classes, full_dataset, device):
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print(f"Training time {total_time_str}")
 
-        if fold_results:
-            valid_fold_stats = [stats for stats in fold_results if stats is not None and len(stats) > 0]
-            if valid_fold_stats:
-                all_fold_stats_np = np.array(valid_fold_stats)
-                mean_stats = np.mean(all_fold_stats_np, axis=0)
-                std_stats = np.std(all_fold_stats_np, axis=0)
-                print("\nAverage K-Fold Performance Metrics (based on last epoch of each fold):")
-                metric_names = [
-                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
-                    "Average Precision  (AP) @[ IoU=0.50      |area=    all| maxDets=100 ]",
-                    "Average Precision  (AP) @[ IoU=0.75      |area=    all| maxDets=100 ]",
-                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
-                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
-                    "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
-                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=  1 ]",
-                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets= 10 ]",
-                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
-                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
-                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
-                    "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
+    if fold_results:
+        valid_fold_stats = [stats for stats in fold_results if stats is not None and len(stats) > 0]
+        if valid_fold_stats:
+            all_fold_stats_np = np.array(valid_fold_stats)
+            mean_stats = np.mean(all_fold_stats_np, axis=0)
+            std_stats = np.std(all_fold_stats_np, axis=0)
+            print("\nAverage K-Fold Performance Metrics (based on last epoch of each fold):")
+            metric_names = [
+                "Average Precision  (AP) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.50      |area=    all| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.75      |area=    all| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=  1 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets= 10 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
+            ]
+            for i, name in enumerate(metric_names):
+                if i < len(mean_stats):
+                    print(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}")
+
+            if args.output_dir:
+                results_file = os.path.join(args.output_dir, "kfold_summary_stats.txt")
+                with open(results_file, "w") as f:
+                    f.write(f"K-Fold Cross-Validation Summary ({args.k_folds} folds)\n")
+                    f.write("Mean Performance Metrics (based on last epoch of each fold):\n")
+                    for i, name in enumerate(metric_names):
+                        if i < len(mean_stats):
+                            f.write(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}\n")
+                    np.savez(os.path.join(args.output_dir, "kfold_stats.npz"), mean_stats=mean_stats,
+                             std_stats=std_stats, all_fold_stats=all_fold_stats_np)
+                print(f"K-Fold summary saved to {results_file}")
+        else:
+            print("No valid stats collected from folds to average.")
+    else:
+        print("No results collected from K-Folds.")
+
+    if fold_phenotype_metrics:
+        print("Average K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
+        aggregated_pheno_results = {}
+        phenotype_keys = ["fresh_weight", "height"]  # From engine.py
+        metric_keys = ["r2", "rmse", "mape"]
+
+        for p_key in phenotype_keys:
+            aggregated_pheno_results[p_key] = {}
+            for m_key in metric_keys:
+                # Collect valid (non-NaN) metrics for this phenotype and metric type from all folds
+                values = [
+                    fold_data[p_key][m_key]
+                    for fold_data in fold_phenotype_metrics
+                    if
+                    fold_data and p_key in fold_data and m_key in fold_data[p_key] and not np.isnan(
+                        fold_data[p_key][m_key])
                 ]
-                for i, name in enumerate(metric_names):
-                    if i < len(mean_stats):
-                        print(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}")
-
-                if args.output_dir:
-                    results_file = os.path.join(args.output_dir, "kfold_summary_stats.txt")
-                    with open(results_file, "w") as f:
-                        f.write(f"K-Fold Cross-Validation Summary ({args.k_folds} folds)\n")
-                        f.write("Mean Performance Metrics (based on last epoch of each fold):\n")
-                        for i, name in enumerate(metric_names):
-                            if i < len(mean_stats):
-                                f.write(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}\n")
-                        np.savez(os.path.join(args.output_dir, "kfold_stats.npz"), mean_stats=mean_stats,
-                                 std_stats=std_stats, all_fold_stats=all_fold_stats_np)
-                    print(f"K-Fold summary saved to {results_file}")
-            else:
-                print("No valid stats collected from folds to average.")
-        else:
-            print("No results collected from K-Folds.")
-
-        if fold_phenotype_metrics:
-            print("Average K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
-            aggregated_pheno_results = {}
-            phenotype_keys = ["fresh_weight", "height"]  # From engine.py
-            metric_keys = ["r2", "rmse", "mape"]
-
-            for p_key in phenotype_keys:
-                aggregated_pheno_results[p_key] = {}
-                for m_key in metric_keys:
-                    # Collect valid (non-NaN) metrics for this phenotype and metric type from all folds
-                    values = [
-                        fold_data[p_key][m_key]
-                        for fold_data in fold_phenotype_metrics
-                        if
-                        fold_data and p_key in fold_data and m_key in fold_data[p_key] and not np.isnan(
-                            fold_data[p_key][m_key])
-                    ]
-                    if values:
-                        mean_val = np.mean(values)
-                        std_val = np.std(values)
-                        aggregated_pheno_results[p_key][f'{m_key}_mean'] = mean_val
-                        aggregated_pheno_results[p_key][f'{m_key}_std'] = std_val
-                        if m_key == 'mape':  # MAPE is printed as percentage
-                            print(
-                                f"  {p_key:<15} {m_key:<10}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%")
-                        else:
-                            print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val:.4f}, Std = {std_val:.4f}")
+                if values:
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    aggregated_pheno_results[p_key][f'{m_key}_mean'] = mean_val
+                    aggregated_pheno_results[p_key][f'{m_key}_std'] = std_val
+                    if m_key == 'mape':  # MAPE is printed as percentage
+                        print(
+                            f"  {p_key:<15} {m_key:<10}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%")
                     else:
-                        aggregated_pheno_results[p_key][f'{m_key}_mean'] = np.nan  # Store NaN if no valid data
-                        aggregated_pheno_results[p_key][f'{m_key}_std'] = np.nan
-                        print(f"  {p_key:<15} {m_key:<10}: Not enough valid data across folds.")
+                        print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val:.4f}, Std = {std_val:.4f}")
+                else:
+                    aggregated_pheno_results[p_key][f'{m_key}_mean'] = np.nan  # Store NaN if no valid data
+                    aggregated_pheno_results[p_key][f'{m_key}_std'] = np.nan
+                    print(f"  {p_key:<15} {m_key:<10}: Not enough valid data across folds.")
 
-            # Save Phenotype summary
-            if args.output_dir and utils.is_main_process():
-                with open(os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt"), "w") as f:
-                    f.write(
-                        f"K-Fold Phenotype Regression Summary ({args.k_folds} folds\nMean Performance (last epoch of each fold):\n")
-                    for p_key in phenotype_keys:
-                        f.write(f" Phenotype: {p_key}\n")
-                        for m_key in metric_keys:
-                            mean_val = aggregated_pheno_results[p_key].get(f'{m_key}_mean', np.nan)
-                            std_val = aggregated_pheno_results[p_key].get(f'{m_key}_std', np.nan)
-                            if not np.isnan(mean_val):
-                                if m_key == 'mape':
-                                    f.write(
-                                        f"    {m_key:<8}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%\n")
-                                else:
-                                    f.write(f"    {m_key:<8}: Mean = {mean_val:.4f}, Std = {std_val:.4f}\n")
+        # Save Phenotype summary
+        if args.output_dir and utils.is_main_process():
+            with open(os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt"), "w") as f:
+                f.write(
+                    f"K-Fold Phenotype Regression Summary ({args.k_folds} folds\nMean Performance (last epoch of each fold):\n")
+                for p_key in phenotype_keys:
+                    f.write(f" Phenotype: {p_key}\n")
+                    for m_key in metric_keys:
+                        mean_val = aggregated_pheno_results[p_key].get(f'{m_key}_mean', np.nan)
+                        std_val = aggregated_pheno_results[p_key].get(f'{m_key}_std', np.nan)
+                        if not np.isnan(mean_val):
+                            if m_key == 'mape':
+                                f.write(
+                                    f"    {m_key:<8}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%\n")
                             else:
-                                f.write(f"    {m_key:<8}: Not enough valid data across folds.\n")
-                np.savez(os.path.join(args.output_dir, "kfold_phenotype_stats.npz"),
-                         aggregated_metrics=aggregated_pheno_results,
-                         all_fold_metrics=fold_phenotype_metrics)
-        else:
-            print("No Phenotype metrics collected from K-Folds.")
+                                f.write(f"    {m_key:<8}: Mean = {mean_val:.4f}, Std = {std_val:.4f}\n")
+                        else:
+                            f.write(f"    {m_key:<8}: Not enough valid data across folds.\n")
+            np.savez(os.path.join(args.output_dir, "kfold_phenotype_stats.npz"),
+                     aggregated_metrics=aggregated_pheno_results,
+                     all_fold_metrics=fold_phenotype_metrics)
+    else:
+        print("No Phenotype metrics collected from K-Folds.")
 
 
 def standard_training(args, num_classes, dataset, dataset_test, device):

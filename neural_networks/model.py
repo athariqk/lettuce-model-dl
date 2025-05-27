@@ -413,16 +413,20 @@ class PhenotypeRegressor(nn.Module):
             transforms.Normalize(image_mean, image_std)
         ])
 
+        self.dual_branch = dual_branch
+
 
     def forward(self, input: DualTensor) -> Tensor:
         # transform the input
         x = self.transform(input.x)
-        y = self.transform(input.y)
 
-        x = self.X(x)
-        y = self.Y(y)
+        features = self.X(x)
 
-        features = torch.cat((x, y), dim=1)
+        if self.dual_branch:
+            y_transformed = self.transform(input.y)
+            y_features = self.Y(y_transformed)  # Should output [B, 576]
+            features = torch.cat((features, y_features), dim=1)  # Concatenate [B, 576] and [B, 576]
+
         out = self.fcn(features)
 
         return out

@@ -27,10 +27,17 @@ def train_one_epoch(model, device, optimizer, dataloader, criterion):
 
         optimizer.zero_grad()
 
+        # need to do this cause my dataset code SUCKS BALLS
         collated_images = DualTensor.collate(images)
+        tensors_to_stack = []
+        for entry in targets:
+            item = entry["phenotypes"][0]
+            tensors_to_stack.append(item)
+        collated_targets = torch.stack(tensors_to_stack, dim=0)
+
         output = model(collated_images)
 
-        loss = criterion(output, targets)
+        loss = criterion(output, collated_targets)
         loss.backward()
 
         optimizer.step()
@@ -42,7 +49,8 @@ def main(args):
     kf = KFold(n_splits=args.k_folds, shuffle=True)
 
     transform = transforms.Compose([
-        transforms.Resize(256),
+        transforms.CenterCrop(1024),
+        transforms.Resize((256, 256)),
         transforms.RandomPhotometricDistort(),
         transforms.RandomCrop(128),
         transforms.RandomHorizontalFlip(p=0.5),
