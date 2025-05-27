@@ -171,7 +171,7 @@ def evaluate(model, data_loader, device):
 
     phenotype_metrics_results = {}
 
-    print("\nPhenotype Regression Metrics (for this fold/evaluation run):")  # Clarified print statement
+    print("Phenotype Regression Metrics (for this fold/evaluation run):")  # Clarified print statement
     if all_gt_phenotypes_np.size > 0 and all_pred_phenotypes_np.size > 0 and \
             all_gt_phenotypes_np.shape[0] == all_pred_phenotypes_np.shape[0] and \
             all_gt_phenotypes_np.shape[1] == len(phenotype_names):  # Basic sanity checks
