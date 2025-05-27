@@ -13,6 +13,9 @@ class DualTensor:
     def shape(self):
         return self.x.shape
 
+    def dim(self):
+        return self.x.dim()
+
     def to(self, *args, **kwargs):
         self.x = self.x.to(*args, **kwargs)
         self.y = self.y.to(*args, **kwargs)
