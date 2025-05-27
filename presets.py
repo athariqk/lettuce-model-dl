@@ -29,6 +29,7 @@ class DetectionPresetTrain:
         mean=(123.0, 117.0, 104.0),
         backend="pil",
         use_v2=False,
+        target_resize: tuple[int, int] = (320, 320)
     ):
 
         T, tv_tensors = get_modules(use_v2)
@@ -41,6 +42,9 @@ class DetectionPresetTrain:
             transforms.append(T.PILToTensor())
         elif backend != "pil":
             raise ValueError(f"backend can be 'tv_tensor', 'tensor' or 'pil', but got {backend}")
+
+        if data_augmentation in ["ssd", "ssdlite"]:  # Apply to ssd and ssdlitemode
+            transforms += [T.Resize(target_resize, antialias=True)]
 
         if data_augmentation == "hflip":
             transforms += [T.RandomHorizontalFlip(p=hflip_prob)]

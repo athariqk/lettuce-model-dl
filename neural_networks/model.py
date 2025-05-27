@@ -121,6 +121,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
         cls_logits = head_outputs["cls_logits"]
         phenotypes_pred = head_outputs["phenotypes_pred"]
 
+        model_outputs_phenotypes = phenotypes_pred.shape[-1] > 0
+
         # Match original targets with default boxes
         num_foreground = 0
         bbox_loss = []
@@ -160,7 +162,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             cls_targets.append(gt_classes_target)
 
             # Calculate phenotype loss (only for foreground objects)
-            if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0:
+            if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0 and model_outputs_phenotypes:
                 matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
                 pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
                 phenotype_loss_per_image = torch.nn.functional.mse_loss(
@@ -264,12 +266,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
             )
             original_image_sizes.append((val[0], val[1]))
 
-        image_tensors: List[Tensor] = [item.x for item in images] if isinstance(images, DualTensor) else images
-        aux_tensors: List[Tensor] = [item.y for item in images] if isinstance(images, DualTensor) else images
-
-        # transform the input
+        image_tensors: List[Tensor] = [item.x if isinstance(item, DualTensor) else item for item in images]
         images_transformed, targets_transformed = self.transform(image_tensors, targets)
-        aux_images_transformed, _ = self.transform(aux_tensors)
 
         # Check for degenerate boxes
         if targets_transformed is not None:
@@ -286,6 +284,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
                     )
 
         if self.multimodal:
+            aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
+            aux_images_transformed, _ = self.transform(aux_tensors)
             features = self.get_backbone_features(images_transformed.tensors, aux_images_transformed.tensors)
         else:
             features = self.model.get_backbone_features(images_transformed.tensors)
