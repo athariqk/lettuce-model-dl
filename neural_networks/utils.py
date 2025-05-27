@@ -45,8 +45,6 @@ def get_model(name: str, **kwargs) -> nn.Module:
 
     if "lettuce_model_multimodal" == name:
         model = neural_networks.lettuce_model_multimodal(**kwargs)
-    elif "lettuce_model_unimodal" == name:
-        model = neural_networks.lettuce_model_unimodal(**kwargs)
     elif "lettuce_model" == name:
         model = neural_networks.lettuce_model(**kwargs)
     elif "lettuce_model_no_pheno" == name:
@@ -56,6 +54,8 @@ def get_model(name: str, **kwargs) -> nn.Module:
         model = neural_networks.baseline_model("80")
     elif "baseline_model_90" == name:
         model = neural_networks.baseline_model("90")
+    elif "baseline_model_2"== name:
+        model = neural_networks.baseline_model("2")
     else:
         raise ValueError(f"Unexpected model name, got: {name}")
 

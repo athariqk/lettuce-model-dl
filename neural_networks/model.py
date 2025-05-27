@@ -1,10 +1,11 @@
-import math
+import copy
 import os
 import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
 from torchvision.models.detection._utils import BoxCoder, _topk_min
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
@@ -12,10 +13,11 @@ from torchvision.ops import boxes as box_ops
 from torchvision.models.detection._utils import SSDMatcher
 from typing import Dict, List, Optional, Tuple
 from cvnets.models.detection.ssd import SingleShotMaskDetector
+import torchvision.transforms.v2 as transforms
 
-from dataset import RGBDepthTensor
 from my_utils import ROOT_DIR
 from neural_networks.blocks import AFF
+from neural_networks.types import DualTensor
 
 
 class Modified_SSDLiteMobileViT(nn.Module):
@@ -34,6 +36,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             iou_thresh: float = 0.5,
             pretrained: str = None,
             phenotype_loss_weight: float = 0.0001,
+            multimodal = False,
             **kwargs
     ):
         super().__init__()
@@ -44,11 +47,11 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         self.model: SingleShotMaskDetector = torch.load(pretrained, weights_only=False)
 
-        self.aux_encoder = copy.deepcopy(self.model.encoder)
+        self.aux_encoder = copy.deepcopy(self.model.encoder) if multimodal else nn.Identity()
 
-        self.aff_0 = AFF(self.model.enc_l3_channels)
-        self.aff_1 = AFF(self.model.enc_l4_channels)
-        self.aff_2 = AFF(self.model.enc_l5_channels)
+        self.aff_0 = AFF(self.model.enc_l3_channels) if multimodal else nn.Identity()
+        self.aff_1 = AFF(self.model.enc_l4_channels) if multimodal else nn.Identity()
+        self.aff_2 = AFF(self.model.enc_l5_channels) if multimodal else nn.Identity()
 
         if image_mean is None:
             image_mean = [0.485, 0.456, 0.406]
@@ -72,6 +75,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         self.label_smoothing = 0.3
 
         self.phenotype_loss_weight = phenotype_loss_weight
+        self.multimodal = multimodal
 
     @torch.jit.unused
     def eager_outputs(
@@ -223,7 +227,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         return end_points
 
     def forward(
-        self, images: List[RGBDepthTensor], targets: Optional[List[Dict[str, Tensor]]] = None
+            self, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
     ) -> (
             Tuple[Dict[str, Tensor],
             List[Dict[str, Tensor]]] |
@@ -235,7 +239,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             A (Losses, Detections) tuple if in scripting, otherwise `Losses` if in training mode and `Detections`
             if not in training mode
         """
-        
+
         if self.training:
             if targets is None:
                 torch._assert(False, "targets should not be none when in training mode")
@@ -253,15 +257,15 @@ class Modified_SSDLiteMobileViT(nn.Module):
         # get the original image sizes
         original_image_sizes: List[Tuple[int, int]] = []
         for img in images:
-            val = img.x.shape[-2:]
+            val = img.shape[-2:]
             torch._assert(
                 len(val) == 2,
-                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.x.shape[-2:]}",
+                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
             )
             original_image_sizes.append((val[0], val[1]))
 
-        image_tensors: List[Tensor] = [item.x for item in images]
-        aux_tensors: List[Tensor] = [item.y for item in images]
+        image_tensors: List[Tensor] = [item.x for item in images] if isinstance(images, DualTensor) else images
+        aux_tensors: List[Tensor] = [item.y for item in images] if isinstance(images, DualTensor) else images
 
         # transform the input
         images_transformed, targets_transformed = self.transform(image_tensors, targets)
@@ -281,15 +285,18 @@ class Modified_SSDLiteMobileViT(nn.Module):
                         f" Found invalid box {degen_bb} for target at index {target_idx}.",
                     )
 
-        features = self.get_backbone_features(images_transformed.tensors, aux_images_transformed.tensors)
+        if self.multimodal:
+            features = self.get_backbone_features(images_transformed.tensors, aux_images_transformed.tensors)
+        else:
+            features = self.model.get_backbone_features(images_transformed.tensors)
 
         cls_logits, bbox_regression, _, phenotypes_pred = self.model.ssd_forward(
             features, device=images_transformed.tensors.device
         )
 
         head_outputs = {
-            "cls_logits": cls_logits,           # [B, N, NumClasses]
-            "bbox_regression": bbox_regression, # [B, N, 4]
+            "cls_logits": cls_logits,  # [B, N, NumClasses]
+            "bbox_regression": bbox_regression,  # [B, N, 4]
             "phenotypes_pred": phenotypes_pred  # [B, N, NumPhenotypes]
         }
 
@@ -307,7 +314,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
             detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
 
-        if torch.jit.is_scripting(): # type: ignore
+        if torch.jit.is_scripting():  # type: ignore
             if not self._has_warned:
                 warnings.warn("SSD always returns a (Losses, Detections) tuple in scripting")
                 self._has_warned = True
@@ -316,7 +323,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         return self.eager_outputs(losses, detections)
 
     def postprocess_detections(
-        self, head_outputs: Dict[str, Tensor], image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
+            self, head_outputs: Dict[str, Tensor], image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
     ) -> List[Dict[str, Tensor]]:
         bbox_regression = head_outputs["bbox_regression"]
         pred_scores = F.softmax(head_outputs["cls_logits"], dim=-1)
@@ -373,3 +380,49 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 }
             )
         return detections
+
+
+def mobilenet_branch():
+    mnet = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+    mnet.classifier = nn.Identity()
+    return mnet
+
+
+class PhenotypeRegressor(nn.Module):
+    def __init__(
+            self,
+            dual_branch=False,
+            size: Tuple[int, int]=(256, 256),
+            image_mean=None,
+            image_std=None,
+    ):
+        super().__init__()
+        self.X = mobilenet_branch()
+        self.Y = mobilenet_branch() if dual_branch else nn.Identity()
+
+        self.n_regression_outputs = 2
+        in_features = 576 * (2 if dual_branch else 1)
+        self.fcn = nn.Linear(in_features, self.n_regression_outputs)
+
+        if image_mean is None:
+            image_mean = [0.485, 0.456, 0.406]
+        if image_std is None:
+            image_std = [0.229, 0.224, 0.225]
+        self.transform = transforms.Compose([
+            transforms.Resize(size),
+            transforms.Normalize(image_mean, image_std)
+        ])
+
+
+    def forward(self, input: DualTensor) -> Tensor:
+        # transform the input
+        x = self.transform(input.x)
+        y = self.transform(input.y)
+
+        x = self.X(x)
+        y = self.Y(y)
+
+        features = torch.cat((x, y), dim=1)
+        out = self.fcn(features)
+
+        return out

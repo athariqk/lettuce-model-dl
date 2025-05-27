@@ -10,53 +10,8 @@ from torchvision.transforms.v2 import functional as F
 from PIL import Image
 
 from coco_utils import _coco_remove_images_without_annotations
+from neural_networks.types import DualTensor
 
-
-class RGBDepthTensor:
-    def __init__(self, x: torch.Tensor, y: torch.Tensor):
-        if not (isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor)):
-            raise TypeError("Both x and y must be a tensor.")
-        self._tensors = (x, y)
-
-    @property
-    def x(self):
-        """The x tensor."""
-        return self._tensors[0]
-
-    @property
-    def y(self):
-        """The y tensor."""
-        return self._tensors[1]
-
-    def to(self, *args, **kwargs):
-        self._tensors[0].to(*args, **kwargs)
-        self._tensors[1].to(*args, **kwargs)
-        return self
-
-    def __getitem__(self, index):
-        if index == 0 or index == 1:
-            return self._tensors[index]
-        raise IndexError("RGBDepthTensor index out of range (must be 0 or 1).")
-
-    def __len__(self):
-        return 2
-
-    def __str__(self):
-        return f"RGBDepthTensor(x={self.x}, y={self.y})"
-
-    def __repr__(self):
-        return f"RGBDepthTensor({self.x!r}, {self.y!r})"  # !r uses repr() for the elements
-
-    def __eq__(self, other):
-        if isinstance(other, RGBDepthTensor):
-            return torch.equal(self.x, other.x) and torch.equal(self.y, other.y)
-        if isinstance(other, tuple) and len(other) == 2 and \
-                isinstance(other[0], torch.Tensor) and isinstance(other[1], torch.Tensor):
-            return torch.equal(self.x, other[0]) and torch.equal(self.y, other[1])
-        return False
-
-    def __hash__(self):
-        raise TypeError(f"Unhashable type: '{self.__class__.__name__}' as it contains mutable tensors.")
 
 class CocoRGBDDataset(VisionDataset):
     def __init__(
@@ -117,7 +72,7 @@ class CocoRGBDDataset(VisionDataset):
         if self.transforms is not None:
             image_pair, target = self.transforms(image_pair, target)
 
-        return RGBDepthTensor(image_pair[0], image_pair[1]), target
+        return DualTensor(image_pair[0], image_pair[1]), target
 
     def __len__(self) -> int:
         return len(self.ids)
