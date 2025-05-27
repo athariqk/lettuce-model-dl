@@ -6,30 +6,23 @@ class DualTensor:
     def __init__(self, x: Tensor, y: Tensor):
         if not (isinstance(x, Tensor) and isinstance(y, Tensor)):
             raise TypeError("Both x and y must be a tensor.")
-        self._tensors = (x, y)
-
-    @property
-    def x(self):
-        """The x tensor."""
-        return self._tensors[0]
-
-    @property
-    def y(self):
-        """The y tensor."""
-        return self._tensors[1]
+        self.x = x
+        self.y = y
 
     @property
     def shape(self):
-        return self._tensors[0].shape
+        return self.x.shape
 
     def to(self, *args, **kwargs):
-        self._tensors[0].to(*args, **kwargs)
-        self._tensors[1].to(*args, **kwargs)
+        self.x = self.x.to(*args, **kwargs)
+        self.y = self.y.to(*args, **kwargs)
         return self
 
     def __getitem__(self, index):
-        if index == 0 or index == 1:
-            return self._tensors[index]
+        if index == 0:
+            return self.x
+        elif index == 1:
+            return self.y
         raise IndexError("DualTensor index out of range (must be 0 or 1).")
 
     def __len__(self):
@@ -53,7 +46,7 @@ class DualTensor:
         raise TypeError(f"Unhashable type: '{self.__class__.__name__}' as it contains mutable tensors.")
 
     @classmethod
-    def collate(cls, list_of_dual_tensors: list['DualTensor']) -> 'DualTensor':
+    def collate(self, list_of_dual_tensors: list['DualTensor']) -> 'DualTensor':
         """
         Collates a list of single-sample DualTensor objects into a single batched DualTensor.
         Each DualTensor in the list is assumed to represent a single sample (e.g., tensor_a has shape [C, H, W]).
@@ -69,7 +62,7 @@ class DualTensor:
 
         # Stack the corresponding tensors from each DualTensor in the list
         # torch.stack will add a new dimension at dim=0 (the batch dimension)
-        batched_tensor_a = torch.stack([dt._tensors[0] for dt in list_of_dual_tensors], dim=0)
-        batched_tensor_b = torch.stack([dt._tensors[1] for dt in list_of_dual_tensors], dim=0)
+        batched_tensor_a = torch.stack([dt.x for dt in list_of_dual_tensors], dim=0)
+        batched_tensor_b = torch.stack([dt.y for dt in list_of_dual_tensors], dim=0)
 
-        return cls(batched_tensor_a, batched_tensor_b)
+        return self(batched_tensor_a, batched_tensor_b)
