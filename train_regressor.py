@@ -70,12 +70,7 @@ def evaluate_model(model, device, dataloader, criterion):
             tensors_to_stack = []
             for entry in targets_dict_list:
                 raw_item = entry["phenotypes"][0]
-                if isinstance(raw_item, torch.Tensor):
-                    item = raw_item.float()
-                else:
-                    item = torch.tensor(raw_item, dtype=torch.float)
-                item = item.squeeze().reshape(1)
-                tensors_to_stack.append(item)
+                tensors_to_stack.append(raw_item)
             collated_targets = torch.stack(tensors_to_stack, dim=0).to(device)
 
             moved_images = []
@@ -85,7 +80,7 @@ def evaluate_model(model, device, dataloader, criterion):
                 else:
                     moved_images.append(img_pair_or_img.to(device))
             collated_images = DualTensor.collate(moved_images)
-            # collated_images.to(device) # If necessary
+            collated_images.to(device) # If necessary
 
             output = model(collated_images)
 
