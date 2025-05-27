@@ -176,7 +176,7 @@ def k_fold_training(args, num_classes, full_dataset, device):
     for fold, (train_idx, test_idx) in enumerate(kf.split(full_dataset)):
         print(f"Fold {fold + 1}/{args.k_folds}")
 
-        current_fold_output_dir = os.path.join(args.fold_output_dir, f"fold_{fold + 1}")
+        current_fold_output_dir = os.path.join(args.output_dir, f"fold_{fold + 1}")
         if args.output_dir:
             utils.mkdir(current_fold_output_dir)
 
