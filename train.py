@@ -8,6 +8,7 @@ import torchvision
 import torchvision.ops._utils
 from sklearn.model_selection import KFold
 
+from coco_eval import CocoEvaluator
 from coco_utils import get_coco, get_coco_kp, get_coco_online
 from dataset import get_rgbd_data
 from engine import evaluate, train_one_epoch
@@ -41,6 +42,10 @@ def get_dataset(is_train, args):
 
 def get_transform(is_train, args):
     if is_train:
+        if "_alb" in args.data_augmentation:
+            return presets.DetectionPresetTrainAlbumentation(
+                data_augmentation=args.data_augmentation
+            )
         return presets.DetectionPresetTrain(
             data_augmentation=args.data_augmentation, backend=args.backend, use_v2=args.use_v2
         )
@@ -303,9 +308,9 @@ def k_fold_training(args, num_classes, full_dataset, device):
                 utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
 
             # evaluate after every epoch
-            evaluator, pheno_metrics = evaluate(model, data_loader_test, device=device)
+            evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device)
 
-            if evaluator and evaluator.iou_types:
+            if evaluator and evaluator.iou_types and evaluator.phenotype_metrics_results:
                 first_iou_type = evaluator.iou_types[0]  # Typically "bbox"
                 if first_iou_type in evaluator.coco_eval:
                     eval_obj = evaluator.coco_eval[first_iou_type]
@@ -316,11 +321,10 @@ def k_fold_training(args, num_classes, full_dataset, device):
                         else:
                             fold_results.append(fold_epoch_stats)
 
-            if pheno_metrics:
                 if len(fold_phenotype_metrics) > fold:  # if entry for this fold exists
-                    fold_phenotype_metrics[fold] = pheno_metrics  # update with latest epoch
+                    fold_phenotype_metrics[fold] = evaluator.phenotype_metrics_results  # update with latest epoch
                 else:
-                    fold_phenotype_metrics.append(pheno_metrics)
+                    fold_phenotype_metrics.append(evaluator.phenotype_metrics_results)
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))

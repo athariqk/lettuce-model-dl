@@ -1,8 +1,12 @@
 from collections import defaultdict
 import functools
+from typing import Tuple
 
+import cv2
 import torch
 import transforms as reference_transforms
+
+import albumentations as A
 
 
 def get_modules(use_v2):
@@ -15,21 +19,23 @@ def get_modules(use_v2):
     else:
         return reference_transforms, None
 
+
 def get_mean_fill(mean_value):
     return mean_value
+
 
 class DetectionPresetTrain:
     # Note: this transform assumes that the input to forward() are always PIL
     # images, regardless of the backend parameter.
     def __init__(
-        self,
-        *,
-        data_augmentation,
-        hflip_prob=0.5,
-        mean=(123.0, 117.0, 104.0),
-        backend="pil",
-        use_v2=False,
-        target_resize: tuple[int, int] = (320, 320)
+            self,
+            *,
+            data_augmentation,
+            hflip_prob=0.5,
+            mean=(123.0, 117.0, 104.0),
+            backend="pil",
+            use_v2=False,
+            target_resize: tuple[int, int] = (320, 320)
     ):
 
         T, tv_tensors = get_modules(use_v2)
@@ -42,9 +48,6 @@ class DetectionPresetTrain:
             transforms.append(T.PILToTensor())
         elif backend != "pil":
             raise ValueError(f"backend can be 'tv_tensor', 'tensor' or 'pil', but got {backend}")
-
-        if data_augmentation in ["ssd", "ssdlite"]:  # Apply to ssd and ssdlitemode
-            transforms += [T.Resize(target_resize, antialias=True)]
 
         if data_augmentation == "hflip":
             transforms += [T.RandomHorizontalFlip(p=hflip_prob)]
@@ -120,4 +123,35 @@ class DetectionPresetEval:
         self.transforms = T.Compose(transforms)
 
     def __call__(self, img, target):
+        return self.transforms(img, target)
+
+
+# Does not work yet
+class DetectionPresetTrainAlbumentation:
+    def __init__(self, data_augmentation):
+        transforms = []
+        augmentation = str.split(data_augmentation, "_alb")[0]
+        kwargs = []
+
+        if augmentation == "ssdmultimodal":
+            transforms += [
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0, rotate_limit=45, p=0.75,
+                                   border_mode=cv2.BORDER_CONSTANT),
+            ]
+            kwargs = {
+                "bbox_params": A.BboxParams(
+                    format='coco',
+                    label_fields=['class_labels', 'attributes_data', 'iscrowd_data'],  # Added fields
+                    min_visibility=0.1,
+                    min_area=100),
+                "additional_targets": {'aux': 'image'}
+            }
+
+        self.transforms = A.Compose(transforms, **kwargs)
+
+    def __call__(self, img, target):
+        if isinstance(img, Tuple):
+            return self.transforms(image=img[0], aux=img[1])
         return self.transforms(img, target)
