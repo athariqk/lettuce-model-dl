@@ -15,6 +15,8 @@ from neural_networks.types import DualTensor
 
 def train_one_epoch(model, device, optimizer, dataloader, criterion):
     model.train()
+    total_epoch_loss = 0.0
+    batches_processed = 0
     for batch_idx, (images, targets) in enumerate(dataloader):
         images = list(image.to(device) for image in images)
         targets = [
@@ -37,10 +39,18 @@ def train_one_epoch(model, device, optimizer, dataloader, criterion):
 
         output = model(collated_images)
 
+        if output.shape != collated_targets.shape:
+            print(
+                f"Warning: Mismatch between output shape ({output.shape}) and target shape ({collated_targets.shape}) in batch {batch_idx}.")
+
         loss = criterion(output, collated_targets)
         loss.backward()
-
         optimizer.step()
+
+        total_epoch_loss += loss.item()
+        batches_processed += 1
+
+    return total_epoch_loss, batches_processed
 
 
 def main(args):
@@ -89,8 +99,11 @@ def main(args):
 
         # Train the model on the current fold
         for epoch in range(args.epoch):
-            train_one_epoch(model, device, optimizer, train_loader, criterion)
+            total_loss, batches_processed = train_one_epoch(model, device, optimizer, train_loader, criterion)
             lr_scheduler.step()
+
+            avg_epoch_loss = total_loss / batches_processed
+            print(f"Epoch [{epoch}/{args.epoch}]:  Average Training Loss: {avg_epoch_loss:.4f}")
 
         # Evaluate the model on the test set
         model.eval()
