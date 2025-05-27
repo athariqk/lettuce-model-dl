@@ -167,7 +167,7 @@ def get_args_parser(add_help=True):
     return parser
 
 
-def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, device):
+def k_fold_training(args, num_classes, full_dataset, device):
     kf = KFold(n_splits=args.k_folds, shuffle=True)
     fold_results = []
     fold_phenotype_metrics = []
@@ -175,6 +175,10 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
     print(f"Starting {args.k_folds}-Fold Cross-Validation")
     for fold, (train_idx, test_idx) in enumerate(kf.split(full_dataset)):
         print(f"Fold {fold + 1}/{args.k_folds}")
+
+        current_fold_output_dir = os.path.join(args.fold_output_dir, f"fold_{fold + 1}")
+        if args.output_dir:
+            utils.mkdir(current_fold_output_dir)
 
         train_subset = torch.utils.data.Subset(full_dataset, train_idx)
         test_subset = torch.utils.data.Subset(full_dataset, test_idx)
@@ -217,9 +221,65 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
 
         print(f"Fold {fold + 1}: Train size: {len(train_subset)}, Val size: {len(test_subset)}")
 
+        print("Creating model")
+        kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
+        if args.data_augmentation in ["multiscale", "lsj"]:
+            kwargs["_skip_resize"] = True
+        if "rcnn" in args.model:
+            if args.rpn_score_thresh is not None:
+                kwargs["rpn_score_thresh"] = args.rpn_score_thresh
+
+        model = get_model(args.model, num_classes=num_classes, **kwargs)
+
+        if args.saved_weights:
+            print("Loading saved weights: {}".format(args.saved_weights))
+            weights = torch.load(args.saved_weights, weights_only=False)["model"]
+            model.load_state_dict(weights)
+
+        model.to(device)
+        if args.distributed and args.sync_bn:
+            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+        model.train()
+
         model_without_ddp = model
         if args.distributed:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
             model_without_ddp = model.module
+
+        if args.norm_weight_decay is None:
+            parameters = [p for p in model.parameters() if p.requires_grad]
+        else:
+            param_groups = torchvision.ops._utils.split_normalization_params(model)
+            wd_groups = [args.norm_weight_decay, args.weight_decay]
+            parameters = [{"params": p, "weight_decay": w} for p, w in zip(param_groups, wd_groups) if p]
+
+        opt_name = args.opt.lower()
+        if opt_name.startswith("sgd"):
+            optimizer = torch.optim.SGD(
+                parameters,
+                lr=args.lr,
+                momentum=args.momentum,
+                weight_decay=args.weight_decay,
+                nesterov="nesterov" in opt_name,
+            )
+        elif opt_name == "adamw":
+            optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
+        else:
+            raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD and AdamW are supported.")
+
+        scaler = torch.amp.grad_scaler.GradScaler() if args.amp else None
+
+        args.lr_scheduler = args.lr_scheduler.lower()
+        if args.lr_scheduler == "multisteplr":
+            lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_steps,
+                                                                gamma=args.lr_gamma)
+        elif args.lr_scheduler == "cosineannealinglr":
+            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        else:
+            raise RuntimeError(
+                f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
+            )
 
         print(f"Start training for Fold {fold + 1}")
         start_time = time.time()
@@ -228,7 +288,7 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                 train_sampler.set_epoch(epoch)
             train_one_epoch(model, optimizer, data_loader_train, device, epoch, args.print_freq, scaler)
             lr_scheduler.step()
-            if args.output_dir:
+            if current_fold_output_dir:
                 checkpoint = {
                     "model": model_without_ddp.state_dict(),
                     "optimizer": optimizer.state_dict(),
@@ -239,8 +299,8 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
                 }
                 if scaler:
                     checkpoint["scaler"] = scaler.state_dict()
-                utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
-                utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+                utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, f"model_{epoch}.pth"))
+                utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
 
             # evaluate after every epoch
             evaluator, pheno_metrics = evaluate(model, data_loader_test, device=device)
@@ -364,7 +424,66 @@ def k_fold_training(args, model, full_dataset, optimizer, lr_scheduler, scaler, 
             print("No Phenotype metrics collected from K-Folds.")
 
 
-def standard_training(args, model, dataset, dataset_test, optimizer, lr_scheduler, scaler, device):
+def standard_training(args, num_classes, dataset, dataset_test, device):
+    print("Creating model")
+    kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
+    if args.data_augmentation in ["multiscale", "lsj"]:
+        kwargs["_skip_resize"] = True
+    if "rcnn" in args.model:
+        if args.rpn_score_thresh is not None:
+            kwargs["rpn_score_thresh"] = args.rpn_score_thresh
+
+    model = get_model(args.model, num_classes=num_classes, **kwargs)
+
+    if args.saved_weights:
+        print("Loading saved weights: {}".format(args.saved_weights))
+        weights = torch.load(args.saved_weights, weights_only=False)["model"]
+        model.load_state_dict(weights)
+
+    model.to(device)
+    if args.distributed and args.sync_bn:
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+    model.train()
+
+    model_without_ddp = model
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model_without_ddp = model.module
+
+    if args.norm_weight_decay is None:
+        parameters = [p for p in model.parameters() if p.requires_grad]
+    else:
+        param_groups = torchvision.ops._utils.split_normalization_params(model)
+        wd_groups = [args.norm_weight_decay, args.weight_decay]
+        parameters = [{"params": p, "weight_decay": w} for p, w in zip(param_groups, wd_groups) if p]
+
+    opt_name = args.opt.lower()
+    if opt_name.startswith("sgd"):
+        optimizer = torch.optim.SGD(
+            parameters,
+            lr=args.lr,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov="nesterov" in opt_name,
+        )
+    elif opt_name == "adamw":
+        optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD and AdamW are supported.")
+
+    scaler = torch.amp.grad_scaler.GradScaler() if args.amp else None
+
+    args.lr_scheduler = args.lr_scheduler.lower()
+    if args.lr_scheduler == "multisteplr":
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_steps, gamma=args.lr_gamma)
+    elif args.lr_scheduler == "cosineannealinglr":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    else:
+        raise RuntimeError(
+            f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
+        )
+
     print("Creating data loaders")
     if args.distributed:
         train_sampler = torch.utils.data.DistributedSampler(dataset)
@@ -468,67 +587,11 @@ def main(args):
 
     dataset, num_classes = get_dataset(is_train=True, args=args)
 
-    print("Creating model")
-    kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
-    if args.data_augmentation in ["multiscale", "lsj"]:
-        kwargs["_skip_resize"] = True
-    if "rcnn" in args.model:
-        if args.rpn_score_thresh is not None:
-            kwargs["rpn_score_thresh"] = args.rpn_score_thresh
-
-    model = get_model(args.model, num_classes=num_classes, **kwargs)
-
-    if args.saved_weights:
-        print("Loading saved weights: {}".format(args.saved_weights))
-        weights = torch.load(args.saved_weights, weights_only=False)["model"]
-        model.load_state_dict(weights)
-
-    model.to(device)
-    if args.distributed and args.sync_bn:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-
-    if args.norm_weight_decay is None:
-        parameters = [p for p in model.parameters() if p.requires_grad]
-    else:
-        param_groups = torchvision.ops._utils.split_normalization_params(model)
-        wd_groups = [args.norm_weight_decay, args.weight_decay]
-        parameters = [{"params": p, "weight_decay": w} for p, w in zip(param_groups, wd_groups) if p]
-
-    opt_name = args.opt.lower()
-    if opt_name.startswith("sgd"):
-        optimizer = torch.optim.SGD(
-            parameters,
-            lr=args.lr,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay,
-            nesterov="nesterov" in opt_name,
-        )
-    elif opt_name == "adamw":
-        optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
-    else:
-        raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD and AdamW are supported.")
-
-    scaler = torch.amp.grad_scaler.GradScaler() if args.amp else None
-
-    args.lr_scheduler = args.lr_scheduler.lower()
-    if args.lr_scheduler == "multisteplr":
-        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_steps, gamma=args.lr_gamma)
-    elif args.lr_scheduler == "cosineannealinglr":
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    else:
-        raise RuntimeError(
-            f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
-        )
-
-    model.train()
     if args.k_folds > 1:
-        k_fold_training(args, model, dataset, optimizer, lr_scheduler, scaler, device)
+        k_fold_training(args, num_classes, dataset, device)
     else:
         dataset_test, _ = get_dataset(is_train=False, args=args)
-        standard_training(args, model, dataset, dataset_test, optimizer, lr_scheduler, scaler, device)
+        standard_training(args, num_classes, dataset, dataset_test, device)
 
 
 if __name__ == "__main__":
