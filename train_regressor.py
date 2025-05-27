@@ -31,6 +31,7 @@ def train_one_epoch(model, device, optimizer, dataloader, criterion):
 
         # need to do this cause my dataset code SUCKS BALLS
         collated_images = DualTensor.collate(images)
+        collated_images.to(device)
         tensors_to_stack = []
         for entry in targets:
             item = entry["phenotypes"][0]
