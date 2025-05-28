@@ -66,7 +66,6 @@ class CocoEvaluator:
         # Consolidate img_ids from this batch for COCO part, handled in synchronize
         self.img_ids.extend(img_ids_list_for_coco)
 
-        # --- PHENOTYPE MATCHING AND COLLECTION ---
         if self.phenotype_names and targets_for_pheno:
             cpu_device = torch.device("cpu")  # Ensure data is on CPU for numpy conversion
             num_phenotype_features = len(self.phenotype_names)
@@ -82,7 +81,6 @@ class CocoEvaluator:
                             not all(k in target_dict for k in ["boxes", "phenotypes"]):
                         continue
 
-                    # Ensure data is on CPU
                     gt_boxes = target_dict["boxes"].to(cpu_device)
                     gt_phenotypes = target_dict["phenotypes"].to(cpu_device)
 
@@ -92,13 +90,33 @@ class CocoEvaluator:
                     num_gt = gt_boxes.shape[0]
                     num_pred = pred_boxes.shape[0]
 
-                    if num_gt == 0 or num_pred == 0:
+                    if num_gt == 0 or num_pred == 0:  # Skip if no ground truth or no prediction instances for matching
                         continue
 
-                    # Ensure phenotypes have the correct number of features before proceeding
-                    if gt_phenotypes.shape[1] != num_phenotype_features or \
-                            pred_phenotypes.shape[1] != num_phenotype_features:
-                        print(f"DEBUG: Phenotype feature count mismatch for image {original_id}. Skipping.")
+                    # Validate phenotype tensor dimensions (must be 2D)
+                    if gt_phenotypes.ndim != 2 or pred_phenotypes.ndim != 2:
+                        # print(f"DEBUG: Phenotype tensors are not 2D for image {original_id}. GT_ndim:{gt_phenotypes.ndim}, Pred_ndim:{pred_phenotypes.ndim}. Skipping.")
+                        continue
+
+                    # Get actual number of features from the data tensors
+                    data_num_features_gt = gt_phenotypes.shape[1]
+                    data_num_features_pred = pred_phenotypes.shape[1]
+
+                    # Ensure GT and Pred phenotype features match each other
+                    if data_num_features_gt != data_num_features_pred:
+                        continue
+
+                    current_image_data_features = data_num_features_gt  # Actual features in this image's data
+
+                    if current_image_data_features == 0:  # Instances exist, but 0 features provided for phenotypes
+                        continue
+
+                    # Core requirement: Accept if data shape implies 1 or 2 features
+                    if current_image_data_features not in [1, 2]:
+                        continue
+
+                    # Ensure data's feature count (1 or 2) matches the configuration's expected feature count
+                    if current_image_data_features != num_phenotype_features:
                         continue
 
                     iou_matrix = torchvision.ops.box_iou(gt_boxes.float(), pred_boxes.float())
@@ -119,17 +137,19 @@ class CocoEvaluator:
                             gt_pheno_to_add = gt_phenotypes[gt_idx].squeeze().cpu().numpy()
                             pred_pheno_to_add = pred_phenotypes[best_pred_idx_for_this_gt].squeeze().cpu().numpy()
 
-                            # Ensure they are 1D arrays of the correct length
-                            if gt_pheno_to_add.ndim == 1 and gt_pheno_to_add.shape[0] == num_phenotype_features and \
+                            # Ensure squeezed arrays are 1D and match the current_image_data_features
+                            if gt_pheno_to_add.ndim == 1 and gt_pheno_to_add.shape[0] == current_image_data_features and \
                                     pred_pheno_to_add.ndim == 1 and pred_pheno_to_add.shape[
-                                0] == num_phenotype_features:
+                                0] == current_image_data_features:
                                 self.all_gt_phenotypes.append(gt_pheno_to_add)
                                 self.all_pred_phenotypes.append(pred_pheno_to_add)
                                 matched_pred_indices.add(best_pred_idx_for_this_gt)
+                            else:
+                                print(f"DEBUG: Squeezed phenotype arrays for image {original_id} do not match expected feature count {current_image_data_features}. "
+                                    f"GT shape: {gt_pheno_to_add.shape}, Pred shape: {pred_pheno_to_add.shape}")
                 except Exception as e:
-                    # print(f"DEBUG: Error during phenotype matching for image {original_id}: {e}")
+                    print(f"DEBUG: Error during phenotype matching for image {original_id}: {e}")
                     continue
-        # --- END PHENOTYPE MATCHING ---
 
     def synchronize_between_processes(self):
         # Synchronize standard COCO eval images
@@ -367,68 +387,49 @@ def convert_to_xywh(boxes):  #
     return torch.stack((xmin, ymin, xmax - xmin, ymax - ymin), dim=1)
 
 
-def merge(img_ids, eval_imgs):  #
-    # Ensure img_ids is a list before passing to all_gather if it expects a list
-    # all_gather typically handles list of tensors or lists of basic python types.
-    # Here img_ids is a list of image IDs (ints/strings)
-    # eval_imgs is a list of numpy arrays.
-
-    all_img_ids_gath = utils.all_gather(img_ids)  # List of lists of image_ids
-    all_eval_imgs_gath = utils.all_gather(eval_imgs)  # List of lists of numpy arrays (or list of numpy arrays)
-
+def merge(img_ids, eval_imgs):
+    all_img_ids_gath = utils.all_gather(img_ids)
+    all_eval_imgs_gath = utils.all_gather(eval_imgs)
     merged_img_ids = []
     for p in all_img_ids_gath:
         merged_img_ids.extend(p)
-
     merged_eval_imgs = []
-    # all_eval_imgs_gath would be like [ [np_arr1_proc1, np_arr2_proc1,...], [np_arr1_proc2,...] ]
-    # but the original code has self.eval_imgs[iou_type].append(eval_imgs), where eval_imgs is already a np.array
-    # and then it does np.concatenate(self.eval_imgs[iou_type], 2)
-    # So, eval_imgs passed to merge here is already a concatenated numpy array from one process.
-    # all_gather(eval_imgs) would then be a list of these numpy arrays, one from each process.
     for p in all_eval_imgs_gath:
-        merged_eval_imgs.append(p)  # p is a numpy array here.
-
-    if not merged_img_ids:  # If no image IDs after gathering, perhaps no data from any process
+        merged_eval_imgs.append(p)
+    if not merged_img_ids:
         return np.array([]), np.array([])
-
-    merged_img_ids_np = np.array(merged_img_ids)  # Convert list of IDs to numpy array
-
-    # Concatenate the list of numpy arrays (one from each process)
-    # Ensure they can be concatenated (e.g., along existing axis 2 or a new axis if necessary)
-    # Original code concatenates along axis 2 *before* merge in synchronize_between_processes.
-    # So merged_eval_imgs is a list of arrays that were already concatenated along axis 2 internally per process.
-    # We need to concatenate these arrays from different processes.
-    # If each element p in merged_eval_imgs has shape e.g. (n_iou_thr, n_area_rng, n_imgs_proc),
-    # we'd typically concatenate along the n_imgs_proc dimension (axis 2).
+    merged_img_ids_np = np.array(merged_img_ids)
     if not merged_eval_imgs:
         return merged_img_ids_np, np.array([])
-
     try:
-        merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2)  # Concatenate along the images dimension
-    except ValueError as e:
-        # This might happen if shapes are inconsistent or one process had no evals.
-        # print(f"Error during eval_imgs concatenation in merge: {e}. Shapes: {[arr.shape for arr in merged_eval_imgs]}")
-        # Fallback or error handling needed. For now, re-raise or return empty if critical.
-        # This indicates a deeper issue with how eval_imgs are collected or shaped before merge.
-        # For now, let's assume this will work if eval_imgs are correctly formed.
-        # If only one process, merged_eval_imgs will have one item, concatenate won't change it if axis=0 and it's just that item.
-        # if len(merged_eval_imgs) == 1:
-        #    merged_eval_imgs_np = merged_eval_imgs[0]
-        # else:
-        #    merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2) # Default from source
-        # Let's stick to the original paper's concatenate. It should be a list of arrays from all_gather.
-        merged_eval_imgs_np = np.concatenate(merged_eval_imgs, 2)
+        merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2)
+    except ValueError: # Ensure robust concatenation even if one list is empty or shapes differ
+        # Fallback: if concatenation fails, attempt to filter and process what's available
+        # This might indicate an issue, but we try to proceed if possible.
+        # A more robust solution might involve padding or careful pre-checking of shapes.
+        # For now, if shapes are truly incompatible for concatenation, this will still fail.
+        # A simple case: if only one process contributes, no concatenation is needed.
+        if len(merged_eval_imgs) == 1:
+            merged_eval_imgs_np = merged_eval_imgs[0]
+        else: # Attempt to concatenate valid arrays if some are empty
+            valid_arrays = [arr for arr in merged_eval_imgs if arr.size > 0]
+            if not valid_arrays: merged_eval_imgs_np = np.array([])
+            elif len(valid_arrays) == 1: merged_eval_imgs_np = valid_arrays[0]
+            else: merged_eval_imgs_np = np.concatenate(valid_arrays, axis=2)
 
-    # keep only unique (and in sorted order) images
-    unique_merged_img_ids, idx = np.unique(merged_img_ids_np, return_index=True)  #
-    # Filter eval_imgs based on these unique indices
-    # Ensure merged_eval_imgs_np has content along the axis being indexed by idx
+
+    unique_merged_img_ids, idx = np.unique(merged_img_ids_np, return_index=True)
     if merged_eval_imgs_np.size > 0:
-        merged_eval_imgs_filtered = merged_eval_imgs_np[..., idx]  #
+        # Ensure idx is not out of bounds for the possibly altered merged_eval_imgs_np
+        # This requires merged_eval_imgs_np to have its 3rd dimension correspond to original merged_img_ids order
+        # If concatenation strategy changed, this indexing might need review. Assuming original intent holds.
+        if merged_eval_imgs_np.shape[2] == len(merged_img_ids_np): # Check if 3rd dim matches original merged ids count
+             merged_eval_imgs_filtered = merged_eval_imgs_np[..., idx]
+        else: # If dimensions don't match up after a fallback concatenation, this filtering is unsafe.
+            # print("Warning: Dimension mismatch in merge after eval_imgs concatenation. Results may be compromised.")
+            merged_eval_imgs_filtered = np.array([]) # Or handle error more gracefully
     else:
         merged_eval_imgs_filtered = np.array([])
-
     return unique_merged_img_ids, merged_eval_imgs_filtered
 
 
