@@ -110,7 +110,7 @@ class CocoEvaluator:
                     # Ensure phenotypes have the correct number of features before proceeding
                     if gt_phenotypes.shape[1] != num_phenotype_features or \
                             pred_phenotypes.shape[1] != num_phenotype_features:
-                        # print(f"DEBUG: Phenotype feature count mismatch for image {original_id}. Skipping.")
+                        print(f"DEBUG: Phenotype feature count mismatch for image {original_id}. Skipping.")
                         continue
 
                     iou_matrix = torchvision.ops.box_iou(gt_boxes.float(), pred_boxes.float())
