@@ -72,10 +72,10 @@ class LettuceRGBDDataset(VisionDataset):
 
         image_pair = [image, paired_img]
 
-        if self.transforms is not None:
+        if self.transforms:
             image_pair, target = self.transforms(image_pair, target)
 
-        return DualTensor(image_pair[0], image_pair[1]), target
+        return image_pair, target
 
     def __len__(self) -> int:
         return len(self.ids)

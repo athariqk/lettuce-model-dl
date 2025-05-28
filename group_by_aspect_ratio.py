@@ -12,6 +12,8 @@ from PIL import Image
 from torch.utils.data.sampler import BatchSampler, Sampler
 from torch.utils.model_zoo import tqdm
 
+from my_utils import TransformedSubset
+
 
 def _repeat_to_at_least(iterable, n):
     repeat_times = math.ceil(n / len(iterable))
@@ -171,6 +173,9 @@ def compute_aspect_ratios(dataset, indices=None):
         return _compute_aspect_ratios_voc_dataset(dataset, indices)
 
     if isinstance(dataset, torch.utils.data.Subset):
+        return _compute_aspect_ratios_subset_dataset(dataset, indices)
+
+    if isinstance(dataset, TransformedSubset):
         return _compute_aspect_ratios_subset_dataset(dataset, indices)
 
     # slow path

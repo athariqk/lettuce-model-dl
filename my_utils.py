@@ -284,3 +284,28 @@ def init_distributed_mode(args):
     )
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
+
+
+class TransformedSubset(torch.utils.data.Dataset):
+    def __init__(self, subset, transform):
+        self.subset = subset
+        self.transform = transform
+
+    def __getitem__(self, index):
+        data, target = self.subset[index]
+
+        if self.transform:
+            return self.transform(data, target)
+
+        return data, target
+
+    def __len__(self):
+        return len(self.subset)
+
+    @property
+    def dataset(self):
+        return self.subset.dataset
+
+    @property
+    def indices(self):
+        return self.subset.indices

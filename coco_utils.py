@@ -11,6 +11,7 @@ import torchvision
 from pycocotools import mask as coco_mask
 from pycocotools.coco import COCO
 
+import my_utils
 import transforms as T
 
 
@@ -184,6 +185,8 @@ def get_coco_api_from_dataset(dataset):
         if isinstance(dataset, torchvision.datasets.CocoDetection):
             break
         if isinstance(dataset, torch.utils.data.Subset):
+            dataset = dataset.dataset
+        if isinstance(dataset, my_utils.TransformedSubset):
             dataset = dataset.dataset
     if isinstance(dataset, torchvision.datasets.CocoDetection):
         return dataset.coco

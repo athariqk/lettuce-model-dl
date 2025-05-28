@@ -8,6 +8,8 @@ import transforms as reference_transforms
 
 import albumentations as A
 
+from neural_networks.types import DualTensor
+
 
 def get_modules(use_v2):
     # We need a protected import to avoid the V2 warning in case just V1 is used
@@ -155,3 +157,35 @@ class DetectionPresetTrainAlbumentation:
         if isinstance(img, Tuple):
             return self.transforms(image=img[0], aux=img[1])
         return self.transforms(img, target)
+
+class DetectionPresetLettuceRGBD:
+    def __init__(self, is_train: bool):
+        T, tv_tensors = get_modules(True)
+
+        self.transforms = T.Compose([
+            T.ToImage(),
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomVerticalFlip(p=0.5),
+            T.RandomRotation(degrees=360),
+            T.ToDtype(torch.float, scale=True),
+            T.ConvertBoundingBoxFormat(tv_tensors.BoundingBoxFormat.XYXY),
+            T.SanitizeBoundingBoxes(),
+            T.ToPureTensor(),
+        ]) if not is_train else T.Compose([
+            T.ToImage(),
+            T.ToDtype(torch.float, scale=True),
+            T.ToPureTensor(),
+        ])
+
+        # self.color_transforms = T.Compose([
+        #     T.RandomPhotometricDistort(brightness=(0.5, 1.5),
+        #                                contrast=(0.5, 1.5),
+        #                                saturation=(0.5, 1.5),
+        #                                hue=(0.5, 1.5)),
+        # ])
+
+    def __call__(self, img, target):
+        data, target = self.transforms(img, target)
+        if isinstance(img, list) and len(img) == 2:
+            return DualTensor(data[0], data[1]), target
+        return data, target

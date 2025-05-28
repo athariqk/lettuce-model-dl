@@ -63,6 +63,4 @@ def get_model(name: str, **kwargs) -> nn.Module:
 
     model.eval()
 
-    print(model)
-
     return model

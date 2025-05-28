@@ -1,6 +1,7 @@
 import datetime
 import os
 import time
+from copy import copy
 
 import numpy as np
 import torch
@@ -26,7 +27,7 @@ def copypaste_collate_fn(batch):
     return copypaste(*utils.collate_fn(batch))
 
 
-def get_dataset(is_train, args):
+def get_dataset(is_train, args, no_transform: bool = False):
     image_set = "train" if is_train else "val"
     paths = {
         "coco": (args.data_path, get_coco, 91),
@@ -37,11 +38,14 @@ def get_dataset(is_train, args):
     }
     p, ds_fn, num_classes = paths[args.dataset]
 
-    ds = ds_fn(p, image_set=image_set, transforms=get_transform(is_train, args), use_v2=args.use_v2)
+    ds = ds_fn(p, image_set=image_set, transforms=None if no_transform else get_transform(is_train, args), use_v2=args.use_v2)
     return ds, num_classes
 
 
 def get_transform(is_train, args):
+    if args.data_augmentation == "lettuce_rgbd":
+        return presets.DetectionPresetLettuceRGBD(is_train=is_train)
+
     if is_train:
         if "_alb" in args.data_augmentation:
             return presets.DetectionPresetTrainAlbumentation(
@@ -174,7 +178,7 @@ def get_args_parser(add_help=True):
 
 
 def k_fold_training(args, num_classes, full_dataset, device):
-    kf = KFold(n_splits=args.k_folds, shuffle=True)
+    kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=96)
     fold_results = []
     fold_phenotype_metrics = []
 
@@ -189,17 +193,20 @@ def k_fold_training(args, num_classes, full_dataset, device):
         train_subset = torch.utils.data.Subset(full_dataset, train_idx)
         test_subset = torch.utils.data.Subset(full_dataset, test_idx)
 
+        train_dataset_for_loader = utils.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
+        test_dataset_for_loader = utils.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
+
         if args.distributed:
             # Distributed samplers need to be aware of the subset
-            train_sampler = torch.utils.data.DistributedSampler(train_subset)
-            test_sampler = torch.utils.data.DistributedSampler(test_subset, shuffle=False)
+            train_sampler = torch.utils.data.DistributedSampler(train_dataset_for_loader)
+            test_sampler = torch.utils.data.DistributedSampler(test_dataset_for_loader, shuffle=False)
         else:
-            train_sampler = torch.utils.data.RandomSampler(train_subset)
-            test_sampler = torch.utils.data.SequentialSampler(test_subset)
+            train_sampler = torch.utils.data.RandomSampler(train_dataset_for_loader)
+            test_sampler = torch.utils.data.SequentialSampler(test_dataset_for_loader)
 
         if args.aspect_ratio_group_factor >= 0:
             try:
-                group_ids = create_aspect_ratio_groups(train_subset, k=args.aspect_ratio_group_factor)
+                group_ids = create_aspect_ratio_groups(train_dataset_for_loader, k=args.aspect_ratio_group_factor)
                 train_batch_sampler = GroupedBatchSampler(train_sampler, group_ids, args.batch_size)
             except Exception as e:
                 print(
@@ -217,15 +224,15 @@ def k_fold_training(args, num_classes, full_dataset, device):
             train_collate_fn_fold = copypaste_collate_fn
 
         data_loader_train = torch.utils.data.DataLoader(
-            train_subset, batch_sampler=train_batch_sampler, num_workers=args.workers,
+            train_dataset_for_loader, batch_sampler=train_batch_sampler, num_workers=args.workers,
             collate_fn=train_collate_fn_fold
         )
         data_loader_test = torch.utils.data.DataLoader(
-            test_subset, batch_size=1, sampler=test_sampler, num_workers=args.workers, collate_fn=utils.collate_fn
+            test_dataset_for_loader, batch_size=1, sampler=test_sampler, num_workers=args.workers, collate_fn=utils.collate_fn
             # Standard collate for eval
         )
 
-        print(f"Fold {fold + 1}: Train size: {len(train_subset)}, Val size: {len(test_subset)}")
+        print(f"Fold {fold + 1}: Train size: {len(train_dataset_for_loader)}, Val size: {len(test_dataset_for_loader)}")
 
         print("Creating model")
         kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
@@ -590,11 +597,12 @@ def main(args):
     # Data loading code
     print("Loading data")
 
-    dataset, num_classes = get_dataset(is_train=True, args=args)
-
     if args.k_folds > 1:
+        # is_train is ignored
+        dataset, num_classes = get_dataset(is_train=True, args=args, no_transform=True)
         k_fold_training(args, num_classes, dataset, device)
     else:
+        dataset, num_classes = get_dataset(is_train=True, args=args)
         dataset_test, _ = get_dataset(is_train=False, args=args)
         standard_training(args, num_classes, dataset, dataset_test, device)
 
