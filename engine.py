@@ -117,9 +117,19 @@ def evaluate(model, data_loader, device):
         outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
         model_time = time.time() - model_time
 
-        res = {target["image_id"]: output for target, output in zip(targets, outputs)}
+        predictions_for_coco = {}
+        targets_for_pheno_eval = {}
+
+        for target_dict, output_dict in zip(targets, outputs):
+            img_id = target_dict["image_id"].item()
+            predictions_for_coco[img_id] = output_dict
+            targets_for_pheno_eval[img_id] = {
+                "boxes": target_dict["boxes"].to(cpu_device),
+                "phenotypes": target_dict["phenotypes"].to(cpu_device)
+            }
+
         evaluator_time = time.time()
-        coco_evaluator.update(res)
+        coco_evaluator.update(predictions_for_coco, targets_for_pheno_eval)
 
         evaluator_time = time.time() - evaluator_time
         metric_logger.update(model_time=model_time, evaluator_time=evaluator_time)

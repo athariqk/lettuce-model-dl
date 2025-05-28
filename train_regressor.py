@@ -213,6 +213,12 @@ def main(args):
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_steps, gamma=args.lr_gamma)
 
+        for param in model.X.parameters():
+            param.requires_grad = not args.freeze_branches >= 1
+        if model.dual_branch:
+            for param in model.Y.parameters():
+                param.requires_grad = not args.freeze_branches >= 2
+
         fold_metrics_summary = {
             "train_loss": [], "r2_train": [], "rmse_train": [], "nrmse_train": [], "mape_train": []
         }
@@ -279,6 +285,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--k-folds", type=int, default=5)
+    parser.add_argument("--freeze-branches", type=int, default=0)
     parser.add_argument(
         "--lr",
         default=0.0001,

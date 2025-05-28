@@ -40,7 +40,7 @@ class CocoEvaluator:
             self.all_pred_phenotypes = []
         # --- END PHENOTYPE MODIFICATIONS ---
 
-    def update(self, predictions, targets_for_pheno=None):  # MODIFIED SIGNATURE
+    def update(self, predictions, targets_for_pheno: dict = None):  # MODIFIED SIGNATURE
         img_ids_set = set()  # Use a set to automatically handle unique image IDs for COCO eval part
 
         # Process standard COCO evaluation types
