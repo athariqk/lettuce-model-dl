@@ -115,16 +115,17 @@ class CocoRGBDDataset(VisionDataset):
 
         if "phenotypes" in self.target_keys:
             fresh_weight_values = []
-            height_values = []
+            # height_values = []
 
             for attributes in batched_target.get("attributes", []):
                 fresh_weight_values.append(attributes.get("fresh_weight", 0.0))
-                height_values.append(attributes.get("height", 0.0))
+                # height_values.append(attributes.get("height", 0.0))
 
             # Stack the values to form a tensor of shape [num_instances, 2]
             # where the first column is fresh_weight and second column is height
             phenotypes = torch.tensor(
-                [[fw, h] for fw, h in zip(fresh_weight_values, height_values)],
+                # [[fw, h] for fw, h in zip(fresh_weight_values, height_values)],
+                [[fw] for fw in fresh_weight_values],
                 dtype=torch.float32
             )
 

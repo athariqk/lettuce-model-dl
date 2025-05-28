@@ -2,7 +2,7 @@ import torch
 from torchinfo import summary
 from torchvision.models import MobileNet_V3_Small_Weights
 
-from neural_networks import lettuce_model, lettuce_model_multimodal, lettuce_model_unimodal
+from neural_networks import lettuce_model, lettuce_model_multimodal
 from cvnets.models.detection.ssd import SingleShotMaskDetector
 from torchvision.models.detection.ssd import SSD
 
@@ -26,7 +26,7 @@ from torchvision.models.detection.ssd import SSD
 # print(summary(model, input_size=[input_shape_modality1, input_shape_modality2]))
 
 model: SingleShotMaskDetector = torch.load(
-            "models/coco-ssd-mobilevitv2-0.75_2nc_no-pheno_structure.pt", map_location="cpu", weights_only=False)
+            "models/coco-ssd-mobilevitv2-0.75_2nc_1pheno_structure.pt", map_location="cpu", weights_only=False)
 checkpoint = torch.load("models/coco-ssd-mobilevitv2-0.75_81nc_weight.pt", map_location="cpu")
 
 # Step 3.
@@ -38,7 +38,7 @@ for k in model.state_dict().keys():
 model.load_state_dict(checkpoint, strict=False)
 model.eval()
 
-torch.save(model, "models/coco-ssd-mobilevitv2-0.75_2nc_no-pheno_pretrained.pt")
+torch.save(model, "models/coco-ssd-mobilevitv2-0.75_2nc_1pheno_pretrained.pt")
 
 # batch_size = 1
 # channels = 3

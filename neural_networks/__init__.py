@@ -35,7 +35,7 @@ def lettuce_model(
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
         image_mean=[0.0, 0.0, 0.0],
         image_std=[1.0, 1.0, 1.0],
-        pretrained=os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt"),
+        pretrained=os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_2nc_1pheno_pretrained.pt"),
         **kwargs
     )
 

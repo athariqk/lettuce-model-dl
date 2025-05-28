@@ -268,7 +268,7 @@ class CocoEvaluator:
                         self.phenotype_metrics_results[name]['nrmse'] = nrmse
 
                         print(
-                            f"  {name:<20} R-squared: {r2:.4f}, RMSE: {rmse:.4f}, MAPE: {mape * 100:.2f}%, NRMSE (std): {nrmse:.4f}")
+                            f"  {name:<20} R-squared: {r2:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}%, NRMSE (std): {nrmse:.4f}")
                     except Exception as e:
                         print(f"  {name:<20} Error calculating metrics for this phenotype: {e}")
                 else:
