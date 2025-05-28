@@ -121,7 +121,7 @@ def evaluate(model, data_loader, device):
         targets_for_pheno_eval = {}
 
         for target_dict, output_dict in zip(targets, outputs):
-            img_id = target_dict["image_id"].item()
+            img_id: int = target_dict["image_id"]
             predictions_for_coco[img_id] = output_dict
             targets_for_pheno_eval[img_id] = {
                 "boxes": target_dict["boxes"].to(cpu_device),
