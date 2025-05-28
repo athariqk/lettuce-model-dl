@@ -336,7 +336,7 @@ def k_fold_training(args, num_classes, full_dataset, device):
             all_fold_stats_np = np.array(valid_fold_stats)
             mean_stats = np.mean(all_fold_stats_np, axis=0)
             std_stats = np.std(all_fold_stats_np, axis=0)
-            print("\nAverage K-Fold Performance Metrics (based on last epoch of each fold):")
+            print("Average K-Fold Performance Metrics (based on last epoch of each fold):")
             metric_names = [
                 "Average Precision  (AP) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
                 "Average Precision  (AP) @[ IoU=0.50      |area=    all| maxDets=100 ]",

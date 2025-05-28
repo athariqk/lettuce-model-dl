@@ -29,56 +29,41 @@ class CocoEvaluator:
         self.img_ids = []
         self.eval_imgs = {k: [] for k in iou_types}
 
-        # --- MODIFICATIONS FOR PHENOTYPE EVALUATION ---
         self.phenotype_names = phenotype_names
         self.phenotype_iou_threshold = phenotype_iou_threshold
-        self.phenotype_metrics_results = {}  # To store calculated phenotype metrics
-        if self.phenotype_names:
-            if not isinstance(self.phenotype_names, (list, tuple)):
-                raise TypeError("phenotype_names must be a list or tuple of strings.")
-            self.all_gt_phenotypes = []
-            self.all_pred_phenotypes = []
-        # --- END PHENOTYPE MODIFICATIONS ---
+        self.phenotype_metrics_results = {}
+        self.all_gt_phenotypes = []
+        self.all_pred_phenotypes = []
 
-    def update(self, predictions, targets_for_pheno: dict = None):  # MODIFIED SIGNATURE
-        img_ids_set = set()  # Use a set to automatically handle unique image IDs for COCO eval part
+    def update(self, predictions, targets_for_pheno: dict = None):
+        img_ids_set = set()
 
-        # Process standard COCO evaluation types
         for original_id in predictions.keys():
             img_ids_set.add(original_id)
 
         img_ids_list_for_coco = list(img_ids_set)
 
         for iou_type in self.iou_types:
-            # Ensure results are prepared only for images relevant to this update call
             current_predictions = {img_id: predictions[img_id] for img_id in img_ids_list_for_coco if
                                    img_id in predictions}
             if not current_predictions:
                 continue
 
             results = self.prepare(current_predictions, iou_type)  #
-            # Suppress pycocotools print output
             with redirect_stdout(io.StringIO()):
                 coco_dt = COCO.loadRes(self.coco_gt, results) if results else COCO()  #
             coco_eval_instance = self.coco_eval[iou_type]
 
             coco_eval_instance.cocoDt = coco_dt
-            coco_eval_instance.params.imgIds = img_ids_list_for_coco  # Use unique image IDs from current batch
+            coco_eval_instance.params.imgIds = img_ids_list_for_coco
 
-            # The 'evaluate' function called here is the one from pycocotools.cocoeval.COCOeval.evaluate, not the engine's one
-            # This part seems to be calling a local 'evaluate' function from the provided coco_eval.py.
-            # Let's assume it's the local helper 'evaluate(imgs_cocoeval_obj_to_run_evaluate_on)'
             current_img_ids, current_eval_imgs = evaluate(
-                coco_eval_instance)  # # evaluate is a helper at the end of this file
+                coco_eval_instance)
 
             self.eval_imgs[iou_type].append(current_eval_imgs)
-            # Accumulate img_ids for synchronization, ensuring uniqueness and order later
-            # self.img_ids are extended for COCO eval, not directly used by phenotype matching here
 
-        # Consolidate img_ids from this batch for COCO part, handled in synchronize
         self.img_ids.extend(img_ids_list_for_coco)
 
-        # --- PHENOTYPE MATCHING AND COLLECTION ---
         if self.phenotype_names and targets_for_pheno:
             cpu_device = torch.device("cpu")  # Ensure data is on CPU for numpy conversion
             num_phenotype_features = len(self.phenotype_names)
@@ -139,35 +124,14 @@ class CocoEvaluator:
                                 self.all_pred_phenotypes.append(pred_pheno_to_add)
                                 matched_pred_indices.add(best_pred_idx_for_this_gt)
                 except Exception as e:
-                    # print(f"DEBUG: Error during phenotype matching for image {original_id}: {e}")
+                    print(f"DEBUG: Error during phenotype matching for image {original_id}: {e}")
                     continue
-        # --- END PHENOTYPE MATCHING ---
 
     def synchronize_between_processes(self):
-        # Synchronize standard COCO eval images
         for iou_type in self.iou_types:
-            # Ensure eval_imgs for this iou_type is not empty before concatenation
             if self.eval_imgs[iou_type]:
                 self.eval_imgs[iou_type] = np.concatenate(self.eval_imgs[iou_type], 2)  #
-                create_common_coco_eval(self.coco_eval[iou_type], self.img_ids, self.eval_imgs[iou_type])  #
-            else:  # Handle case where no evaluations were added for an iou_type (e.g. no predictions for this type)
-                # Create a dummy eval_imgs or ensure create_common_coco_eval can handle empty
-                # For now, if it's empty, we might not need to call create_common_coco_eval
-                # Or, ensure img_ids passed to create_common_coco_eval is also filtered accordingly
-                # This part needs careful handling based on how create_common_coco_eval behaves with potentially empty/mismatched data
-                # print(f"Warning: No eval_imgs to synchronize for iou_type {iou_type}")
-                # A simple fix might be to ensure self.img_ids is also filtered or handled if eval_imgs is empty
-                # The original create_common_coco_eval merges img_ids globally then filters eval_imgs by unique idx.
-                # If an iou_type had no evals, its self.eval_imgs[iou_type] would be empty.
-                # It's best if create_common_coco_eval is robust or we ensure it gets valid (even if empty) eval_imgs.
-                # For now, let's assume if eval_imgs[iou_type] is empty, we might skip its create_common_coco_eval call,
-                # or ensure it's initialized as an empty structure that concatenate and create_common_coco_eval can handle.
-                # The original code concatenates then calls create_common_coco_eval. So if list is empty, concatenate fails.
-                # So we should only call if list is not empty.
-                # The global self.img_ids are gathered in create_common_coco_eval via merge.
-                pass
 
-        # --- SYNCHRONIZE PHENOTYPE DATA ---
         if self.phenotype_names:
             if utils.is_dist_avail_and_initialized():  # Check if distributed training
                 gathered_gt_lists = utils.all_gather(self.all_gt_phenotypes)
@@ -182,29 +146,33 @@ class CocoEvaluator:
                 for sublist in gathered_pred_lists:
                     flat_pred_list.extend(sublist)
                 self.all_pred_phenotypes = flat_pred_list
-        # --- END PHENOTYPE SYNCHRONIZATION ---
 
     def accumulate(self):
         for coco_eval in self.coco_eval.values():
-            coco_eval.accumulate()  #
+            coco_eval.accumulate()
 
     def summarize(self):
         for iou_type, coco_eval in self.coco_eval.items():
-            print(f"IoU metric: {iou_type}")  #
-            coco_eval.summarize()  #
+            print(f"IoU metric: {iou_type}")
+            coco_eval.summarize()
 
-        # --- SUMMARIZE PHENOTYPE METRICS ---
-        if self.phenotype_names and self.all_gt_phenotypes and self.all_pred_phenotypes:
-            self._calculate_and_print_phenotype_metrics()
-        elif self.phenotype_names:
+        if self.phenotype_names:
             print("Phenotype Regression Metrics (for this fold/evaluation run):")
-            print("  Not enough matched ground truth or prediction phenotype data to calculate metrics.")
-            for name in self.phenotype_names:  # Ensure dict has keys even if no data
-                self.phenotype_metrics_results[name] = {'r2': np.nan, 'rmse': np.nan, 'mape': np.nan, 'nrmse': np.nan}
+
+            if self.all_gt_phenotypes and self.all_pred_phenotypes:
+                self._calculate_and_print_phenotype_metrics()
+            else:
+                print("  Not enough matched ground truth or prediction phenotype data to calculate metrics.")
+                for name in self.phenotype_names:  # Ensure dict has keys even if no data
+                    self.phenotype_metrics_results[name] = {
+                        'r2': np.nan,
+                        'rmse': np.nan,
+                        'mape': np.nan,
+                        'nrmse': np.nan
+                    }
 
     def _calculate_and_print_phenotype_metrics(self):
         """Helper function to calculate and print phenotype regression metrics."""
-        print("Phenotype Regression Metrics (for this fold/evaluation run):")
 
         # Initialize all phenotype metrics to NaN
         for name in self.phenotype_names:
@@ -393,11 +361,6 @@ def merge(img_ids, eval_imgs):  #
         merged_img_ids.extend(p)
 
     merged_eval_imgs = []
-    # all_eval_imgs_gath would be like [ [np_arr1_proc1, np_arr2_proc1,...], [np_arr1_proc2,...] ]
-    # but the original code has self.eval_imgs[iou_type].append(eval_imgs), where eval_imgs is already a np.array
-    # and then it does np.concatenate(self.eval_imgs[iou_type], 2)
-    # So, eval_imgs passed to merge here is already a concatenated numpy array from one process.
-    # all_gather(eval_imgs) would then be a list of these numpy arrays, one from each process.
     for p in all_eval_imgs_gath:
         merged_eval_imgs.append(p)  # p is a numpy array here.
 
@@ -406,36 +369,15 @@ def merge(img_ids, eval_imgs):  #
 
     merged_img_ids_np = np.array(merged_img_ids)  # Convert list of IDs to numpy array
 
-    # Concatenate the list of numpy arrays (one from each process)
-    # Ensure they can be concatenated (e.g., along existing axis 2 or a new axis if necessary)
-    # Original code concatenates along axis 2 *before* merge in synchronize_between_processes.
-    # So merged_eval_imgs is a list of arrays that were already concatenated along axis 2 internally per process.
-    # We need to concatenate these arrays from different processes.
-    # If each element p in merged_eval_imgs has shape e.g. (n_iou_thr, n_area_rng, n_imgs_proc),
-    # we'd typically concatenate along the n_imgs_proc dimension (axis 2).
     if not merged_eval_imgs:
         return merged_img_ids_np, np.array([])
 
     try:
         merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2)  # Concatenate along the images dimension
     except ValueError as e:
-        # This might happen if shapes are inconsistent or one process had no evals.
-        # print(f"Error during eval_imgs concatenation in merge: {e}. Shapes: {[arr.shape for arr in merged_eval_imgs]}")
-        # Fallback or error handling needed. For now, re-raise or return empty if critical.
-        # This indicates a deeper issue with how eval_imgs are collected or shaped before merge.
-        # For now, let's assume this will work if eval_imgs are correctly formed.
-        # If only one process, merged_eval_imgs will have one item, concatenate won't change it if axis=0 and it's just that item.
-        # if len(merged_eval_imgs) == 1:
-        #    merged_eval_imgs_np = merged_eval_imgs[0]
-        # else:
-        #    merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2) # Default from source
-        # Let's stick to the original paper's concatenate. It should be a list of arrays from all_gather.
         merged_eval_imgs_np = np.concatenate(merged_eval_imgs, 2)
 
-    # keep only unique (and in sorted order) images
     unique_merged_img_ids, idx = np.unique(merged_img_ids_np, return_index=True)  #
-    # Filter eval_imgs based on these unique indices
-    # Ensure merged_eval_imgs_np has content along the axis being indexed by idx
     if merged_eval_imgs_np.size > 0:
         merged_eval_imgs_filtered = merged_eval_imgs_np[..., idx]  #
     else:
@@ -445,18 +387,10 @@ def merge(img_ids, eval_imgs):  #
 
 
 def create_common_coco_eval(coco_eval, img_ids, eval_imgs):  #
-    # img_ids here is self.img_ids (list of all img_ids from all updates on one process)
-    # eval_imgs here is self.eval_imgs[iou_type] (concatenated np array from one process)
-
     # These are gathered from all processes using utils.all_gather
     img_ids_merged, eval_imgs_merged = merge(img_ids, eval_imgs)  #
 
     img_ids_list = list(img_ids_merged)
-    # eval_imgs_merged is already a numpy array. Flattening it might lose structure.
-    # The original code has .flatten() which might be specific to how COCOeval expects evalImgs.
-    # COCOeval.evalImgs is a list of dicts. The np.asarray(imgs.evalImgs).reshape(...) in `evaluate` helper
-    # suggests evalImgs internally becomes structured.
-    # Let's trust the original flatten logic.
     eval_imgs_list = list(eval_imgs_merged.flatten())  #
 
     coco_eval.evalImgs = eval_imgs_list
@@ -464,17 +398,13 @@ def create_common_coco_eval(coco_eval, img_ids, eval_imgs):  #
     coco_eval._paramsEval = copy.deepcopy(coco_eval.params)  #
 
 
-# This evaluate is a helper specific to this file, not the main engine's evaluate
-def evaluate(coco_eval_obj):  # Takes a COCOeval object as input
-    # Renamed parameter to avoid confusion with global evaluate
+def evaluate(coco_eval_obj):
     with redirect_stdout(io.StringIO()):
-        coco_eval_obj.evaluate()  # Calls the method of the COCOeval object
-    # Reshape needs to be careful if params.imgIds is empty
+        coco_eval_obj.evaluate()
     num_img_ids = len(coco_eval_obj.params.imgIds)
-    if num_img_ids == 0:  # Handle case with no images to evaluate
-        # Return empty or appropriately shaped empty arrays
+    if num_img_ids == 0:
         return coco_eval_obj.params.imgIds, np.array([]).reshape(-1, len(coco_eval_obj.params.areaRng), 0)
 
     return coco_eval_obj.params.imgIds, np.asarray(coco_eval_obj.evalImgs).reshape(
         -1, len(coco_eval_obj.params.areaRng), num_img_ids
-    )  #
+    )
