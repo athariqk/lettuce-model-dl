@@ -10,7 +10,7 @@ from sklearn.model_selection import KFold
 
 from coco_eval import CocoEvaluator
 from coco_utils import get_coco, get_coco_kp, get_coco_online
-from dataset import get_rgbd_data
+from dataset import get_lettuce_data, get_lettuce_data_no_h
 from engine import evaluate, train_one_epoch
 from group_by_aspect_ratio import GroupedBatchSampler, create_aspect_ratio_groups
 from torchvision.transforms import InterpolationMode
@@ -32,7 +32,8 @@ def get_dataset(is_train, args):
         "coco": (args.data_path, get_coco, 91),
         "coco_kp": (args.data_path, get_coco_kp, 2),
         "coco_online": (args.data_path, get_coco_online, 91),
-        "coco_rgbd": (args.data_path, get_rgbd_data, 2)
+        "lettuce_rgbd": (args.data_path, get_lettuce_data, 2),
+        "lettuce_rgbd_no_h": (args.data_path, get_lettuce_data_no_h, 2)
     }
     p, ds_fn, num_classes = paths[args.dataset]
 
@@ -568,7 +569,7 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
 def main(args):
     if args.backend.lower() == "tv_tensor" and not args.use_v2:
         raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
-    if args.dataset not in ("coco", "coco_kp", "coco_online", "coco_rgbd"):
+    if args.dataset not in ("coco", "coco_kp", "coco_online", "lettuce_rgbd", "lettuce_rgbd_no_h"):
         raise ValueError(f"Dataset should be coco, coco_kp, coco_online or coco-rgbd, got {args.dataset}")
     if "keypoint" in args.model and args.dataset != "coco_kp":
         raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")

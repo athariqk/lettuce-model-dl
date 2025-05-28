@@ -47,6 +47,8 @@ def get_model(name: str, **kwargs) -> nn.Module:
         model = neural_networks.lettuce_model_multimodal(**kwargs)
     elif "lettuce_model" == name:
         model = neural_networks.lettuce_model(**kwargs)
+    elif "lettuce_model_no_height" == name:
+        model = neural_networks.lettuce_model(with_height=False)
     elif "lettuce_model_no_pheno" == name:
         kwargs["phenotype_loss_weight"] = 0.0
         model = neural_networks.lettuce_model(**kwargs)
@@ -60,5 +62,7 @@ def get_model(name: str, **kwargs) -> nn.Module:
         raise ValueError(f"Unexpected model name, got: {name}")
 
     model.eval()
+
+    print(model)
 
     return model

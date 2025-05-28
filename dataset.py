@@ -13,25 +13,28 @@ from coco_utils import _coco_remove_images_without_annotations
 from neural_networks.types import DualTensor
 
 
-class CocoRGBDDataset(VisionDataset):
+class LettuceRGBDDataset(VisionDataset):
     def __init__(
-        self,
-        root: Union[str, Path],
-        annFile: str,
-        depth_image_suffix: str,
-        transform: Optional[Callable] = None,
-        target_transform: Optional[Callable] = None,
-        transforms: Optional[Callable] = None,
+            self,
+            root: Union[str, Path],
+            annFile: str,
+            depth_image_suffix: str,
+            with_height: bool,
+            transform: Optional[Callable] = None,
+            target_transform: Optional[Callable] = None,
+            transforms: Optional[Callable] = None,
     ) -> None:
         super().__init__(root, transforms, transform, target_transform)
         from pycocotools.coco import COCO
-        
+
         self.coco = COCO(annFile)
         self.ids = list(sorted(self.coco.imgs.keys()))
-        
+
         self.target_keys = {"image_id", "boxes", "labels", "phenotypes"}
 
         self.depth_image_suffix = depth_image_suffix
+
+        self.with_height = with_height
 
     def _load_image(self, id: int) -> Image.Image:
         info = self.coco.loadImgs(id)[0]
@@ -64,7 +67,7 @@ class CocoRGBDDataset(VisionDataset):
         id = self.ids[index]
         image, paired_img = self._load_image_pair(id)
         target = self._load_target(id)
-        
+
         image, target = self.wrap_to_tv2(index, (image, target))
 
         image_pair = [image, paired_img]
@@ -115,19 +118,24 @@ class CocoRGBDDataset(VisionDataset):
 
         if "phenotypes" in self.target_keys:
             fresh_weight_values = []
-            # height_values = []
+            height_values = []
 
             for attributes in batched_target.get("attributes", []):
                 fresh_weight_values.append(attributes.get("fresh_weight", 0.0))
-                # height_values.append(attributes.get("height", 0.0))
+                height_values.append(attributes.get("height", 0.0))
 
             # Stack the values to form a tensor of shape [num_instances, 2]
             # where the first column is fresh_weight and second column is height
-            phenotypes = torch.tensor(
-                # [[fw, h] for fw, h in zip(fresh_weight_values, height_values)],
-                [[fw] for fw in fresh_weight_values],
-                dtype=torch.float32
-            )
+            if self.with_height:
+                phenotypes = torch.tensor(
+                    [[fw, h] for fw, h in zip(fresh_weight_values, height_values)],
+                    dtype=torch.float32
+                )
+            else:
+                phenotypes = torch.tensor(
+                    [[fw] for fw in fresh_weight_values],
+                    dtype=torch.float32
+                )
 
             target["phenotypes"] = phenotypes
 
@@ -140,7 +148,8 @@ class CocoRGBDDataset(VisionDataset):
         img_info = self.coco.imgs[self.ids[index]]
         return img_info["height"], img_info["width"]
 
-def get_rgbd_data(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False):
+
+def get_lettuce_data(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False, with_height=True):
     anno_file_template = "{}_{}.json"
     PATHS = {
         "train": ("train", os.path.join("annotations", anno_file_template.format(mode, "train"))),
@@ -151,8 +160,11 @@ def get_rgbd_data(root, image_set, transforms, mode="instances", use_v2=False, w
     img_folder = os.path.join(root, img_folder)
     ann_file = os.path.join(root, ann_file)
 
-    dataset = CocoRGBDDataset(img_folder, ann_file, transforms=transforms, depth_image_suffix=".png")
+    dataset = LettuceRGBDDataset(img_folder, ann_file, transforms=transforms, depth_image_suffix=".png", with_height=with_height)
 
     dataset = _coco_remove_images_without_annotations(dataset)
 
     return dataset
+
+def get_lettuce_data_no_h(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False):
+    return get_lettuce_data(root, image_set, transforms, mode, use_v2, with_masks, False)

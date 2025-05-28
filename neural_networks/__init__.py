@@ -25,17 +25,22 @@ __all__ = [
 
 def lettuce_model(
         trainable_backbone_layers: Optional[int] = None,
-        multimodal = False,
+        multimodal=False,
+        with_height=True,
         **kwargs: Any
 ) -> Modified_SSDLiteMobileViT:
-    'Loads a model for lettuce growth phenotype estimation'
+    """Loads a model for lettuce growth phenotype estimation"""
+
+    variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt" if with_height else\
+        "models/coco-ssd-mobilevitv2-0.75_2nc_1pheno_pretrained.pt"
 
     model = Modified_SSDLiteMobileViT(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
         image_mean=[0.0, 0.0, 0.0],
         image_std=[1.0, 1.0, 1.0],
-        pretrained=os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_2nc_1pheno_pretrained.pt"),
+        pretrained=os.path.join(ROOT_DIR, variant),
+        multimodal=multimodal,
         **kwargs
     )
 
@@ -52,7 +57,7 @@ def lettuce_model_multimodal(
         trainable_backbone_layers: Optional[int] = None,
         **kwargs: Any
 ) -> Modified_SSDLiteMobileViT:
-    'Loads a multimodal model for lettuce growth phenotype estimation'
+    """Loads a multimodal model for lettuce growth phenotype estimation"""
     return lettuce_model(trainable_backbone_layers=trainable_backbone_layers, multimodal=True, **kwargs)
 
 

@@ -178,7 +178,7 @@ def convert_to_coco_api(ds):
 
 
 def get_coco_api_from_dataset(dataset):
-    from dataset import CocoRGBDDataset
+    from dataset import LettuceRGBDDataset
     # FIXME: This is... awful?
     for _ in range(10):
         if isinstance(dataset, torchvision.datasets.CocoDetection):
@@ -187,7 +187,7 @@ def get_coco_api_from_dataset(dataset):
             dataset = dataset.dataset
     if isinstance(dataset, torchvision.datasets.CocoDetection):
         return dataset.coco
-    if isinstance(dataset, CocoRGBDDataset):
+    if isinstance(dataset, LettuceRGBDDataset):
         return dataset.coco
     return convert_to_coco_api(dataset)
 

@@ -65,67 +65,120 @@ class CocoEvaluator:
         self.img_ids.extend(img_ids_list_for_coco)
 
         if self.phenotype_names and targets_for_pheno:
-            cpu_device = torch.device("cpu")  # Ensure data is on CPU for numpy conversion
+            cpu_device = torch.device("cpu")
             num_phenotype_features = len(self.phenotype_names)
 
-            for original_id, output_dict in predictions.items():
+            coco_eval_obj = self.coco_eval["bbox"]
+
+            if not coco_eval_obj.cocoDt or not coco_eval_obj.cocoDt.anns:
+                print(f"Warning: coco_eval_obj.cocoDt.anns is empty for iou_type 'bbox'. " +
+                    "This means no detections were loaded for the current batch for this iou_type. Skipping phenotype eval.")
+                return
+
+            if coco_eval_obj.params.iouThrs is None or len(coco_eval_obj.params.iouThrs) == 0:
+                print(
+                    f"Warning: coco_eval_obj.params.iouThrs is not set for iou_type 'bbox'. Skipping phenotype eval.")
+                return
+
+            try:
+                iou_threshold_indices = \
+                np.where(np.isclose(coco_eval_obj.params.iouThrs, self.phenotype_iou_threshold))[0]
+                if len(iou_threshold_indices) == 0:
+                    print(
+                        f"Warning: phenotype_iou_threshold {self.phenotype_iou_threshold} not found in COCOeval iouThrs: {coco_eval_obj.params.iouThrs}. Closest matching might be needed or skipping.")
+                    return
+                ti = iou_threshold_indices[0]  # Index for our target IoU threshold
+            except Exception as e:
+                print(f"Error finding IoU threshold index: {e}. Skipping phenotype eval.")
+                return
+
+            if not coco_eval_obj.evalImgs:
+                print(f"Warning: coco_eval_obj.evalImgs is empty for iou_type 'bbox'. Skipping phenotype eval.")
+                return
+
+            # Process each image in the current batch
+            for original_id_tensor, output_dict in predictions.items():
+                original_id = original_id_tensor.item() if isinstance(original_id_tensor,
+                                                                      torch.Tensor) else original_id_tensor
+
                 if original_id not in targets_for_pheno:
                     continue
 
                 target_dict = targets_for_pheno[original_id]
 
-                try:
-                    if not all(k in output_dict for k in ["boxes", "phenotypes"]) or \
-                            not all(k in target_dict for k in ["boxes", "phenotypes"]):
+                if not all(k in output_dict for k in ["phenotypes"]) or \
+                        not all(k in target_dict for k in ["phenotypes", "coco_ann_ids"]):  # coco_ann_ids is crucial
+                    print(f"Warning: Missing 'phenotypes' or 'coco_ann_ids' for image {original_id}. Skipping phenotype eval for this image.")
+                    continue
+
+                gt_phenotypes_tensor = target_dict["phenotypes"].to(cpu_device)
+                pred_phenotypes_tensor = output_dict["phenotypes"].to(cpu_device)
+
+                if gt_phenotypes_tensor.ndim < 2 or pred_phenotypes_tensor.ndim < 2 or \
+                        gt_phenotypes_tensor.shape[1] != num_phenotype_features or \
+                        pred_phenotypes_tensor.shape[1] != num_phenotype_features:
+                    print(f"DEBUG: Phenotype feature count mismatch or unexpected shape for image {original_id}. Skipping.")
+                    continue
+
+                gt_coco_id_to_tensor_idx = {
+                    coco_id: idx for idx, coco_id in enumerate(target_dict['coco_ann_ids'])
+                }
+
+                dt_coco_id_to_tensor_idx = {}
+                if coco_eval_obj.cocoDt and coco_eval_obj.cocoDt.anns:
+                    for dt_id, dt_ann_details in coco_eval_obj.cocoDt.anns.items():
+                        # Ensure this dt_ann_details is for the current image_id
+                        # and has 'original_idx' (which we added in prepare_for_coco_detection)
+                        if dt_ann_details.get('image_id') == original_id and 'original_idx' in dt_ann_details:
+                            dt_coco_id_to_tensor_idx[dt_id] = dt_ann_details['original_idx']
+
+                processed_gt_tensor_indices_for_img = set()
+
+                for eval_entry in coco_eval_obj.evalImgs:
+                    if eval_entry['image_id'] != original_id:
                         continue
 
-                    # Ensure data is on CPU
-                    gt_boxes = target_dict["boxes"].to(cpu_device)
-                    gt_phenotypes = target_dict["phenotypes"].to(cpu_device)
+                    entry_gt_ids_coco = eval_entry['gtIds']  # These are COCO annotation IDs for GTs
+                    # entry_dt_ids_coco = eval_entry['dtIds']  # These are IDs for Dts (keys in coco_eval_obj.cocoDt.anns)
 
-                    pred_boxes = output_dict["boxes"].to(cpu_device)
-                    pred_phenotypes = output_dict["phenotypes"].to(cpu_device)
+                    # gtMatches[ti, gt_local_idx] gives the dt_id (COCO Dt ID) matched to gt_ids_coco[gt_local_idx]
+                    entry_gt_matches_dt_ids = eval_entry['gtMatches'][ti, :]
 
-                    num_gt = gt_boxes.shape[0]
-                    num_pred = pred_boxes.shape[0]
+                    for gt_local_idx, matched_dt_coco_id in enumerate(entry_gt_matches_dt_ids):
+                        if matched_dt_coco_id == 0:  # This GT was not matched to any Dt at this IoU threshold
+                            continue
 
-                    if num_gt == 0 or num_pred == 0:
-                        continue
+                        gt_coco_ann_id = entry_gt_ids_coco[gt_local_idx]
 
-                    # Ensure phenotypes have the correct number of features before proceeding
-                    if gt_phenotypes.shape[1] != num_phenotype_features or \
-                            pred_phenotypes.shape[1] != num_phenotype_features:
-                        print(f"DEBUG: Phenotype feature count mismatch for image {original_id}. Skipping.")
-                        continue
+                        gt_tensor_idx = gt_coco_id_to_tensor_idx.get(gt_coco_ann_id)
+                        pred_tensor_idx = dt_coco_id_to_tensor_idx.get(matched_dt_coco_id)
 
-                    iou_matrix = torchvision.ops.box_iou(gt_boxes.float(), pred_boxes.float())
-                    matched_pred_indices = set()
+                        if gt_tensor_idx is None or pred_tensor_idx is None:
+                            print(f"Warning: Could not map COCO IDs to tensor indices for image {original_id}. GT ID: {gt_coco_ann_id}, Dt ID: {matched_dt_coco_id}")
+                            continue
 
-                    for gt_idx in range(num_gt):
-                        best_iou_for_this_gt = -1.0
-                        best_pred_idx_for_this_gt = -1
-                        for pred_idx in range(num_pred):
-                            if pred_idx in matched_pred_indices:
+                        if gt_tensor_idx in processed_gt_tensor_indices_for_img:
+                            # This GT (by tensor index) has already been paired for phenotype eval for this image, possibly from another category's eval_entry
+                            continue
+
+                        try:
+                            if gt_tensor_idx >= gt_phenotypes_tensor.shape[0] or pred_tensor_idx >= \
+                                    pred_phenotypes_tensor.shape[0]:
+                                print(f"Warning: Tensor index out of bounds. GT idx: {gt_tensor_idx} (max: {gt_phenotypes_tensor.shape[0]-1}), Pred idx: {pred_tensor_idx} (max: {pred_phenotypes_tensor.shape[0]-1}) for image {original_id}")
                                 continue
-                            current_iou = iou_matrix[gt_idx, pred_idx].item()
-                            if current_iou > best_iou_for_this_gt:
-                                best_iou_for_this_gt = current_iou
-                                best_pred_idx_for_this_gt = pred_idx
 
-                        if best_iou_for_this_gt >= self.phenotype_iou_threshold and best_pred_idx_for_this_gt != -1:
-                            gt_pheno_to_add = gt_phenotypes[gt_idx].squeeze().cpu().numpy()
-                            pred_pheno_to_add = pred_phenotypes[best_pred_idx_for_this_gt].squeeze().cpu().numpy()
+                            gt_pheno_to_add = gt_phenotypes_tensor[gt_tensor_idx].squeeze().cpu().numpy()
+                            pred_pheno_to_add = pred_phenotypes_tensor[pred_tensor_idx].squeeze().cpu().numpy()
 
-                            # Ensure they are 1D arrays of the correct length
                             if gt_pheno_to_add.ndim == 1 and gt_pheno_to_add.shape[0] == num_phenotype_features and \
                                     pred_pheno_to_add.ndim == 1 and pred_pheno_to_add.shape[
                                 0] == num_phenotype_features:
                                 self.all_gt_phenotypes.append(gt_pheno_to_add)
                                 self.all_pred_phenotypes.append(pred_pheno_to_add)
-                                matched_pred_indices.add(best_pred_idx_for_this_gt)
-                except Exception as e:
-                    print(f"DEBUG: Error during phenotype matching for image {original_id}: {e}")
-                    continue
+                                processed_gt_tensor_indices_for_img.add(gt_tensor_idx)
+                        except Exception as e_pair:
+                            print(f"Error extracting phenotype pair for image {original_id} (GT tensor idx {gt_tensor_idx}, Pred tensor idx {pred_tensor_idx}): {e_pair}")
+                            pass
 
     def synchronize_between_processes(self):
         for iou_type in self.iou_types:
@@ -262,7 +315,7 @@ class CocoEvaluator:
                 continue
 
             boxes = prediction["boxes"]
-            boxes = convert_to_xywh(boxes).tolist()  #
+            boxes = convert_to_xywh(boxes).tolist()
             scores = prediction["scores"].tolist()
             labels = prediction["labels"].tolist()
 
@@ -273,6 +326,7 @@ class CocoEvaluator:
                         "category_id": labels[k],
                         "bbox": box,
                         "score": scores[k],
+                        "original_idx": k,
                     }
                     for k, box in enumerate(boxes)
                 ]
