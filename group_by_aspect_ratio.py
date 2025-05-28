@@ -12,7 +12,7 @@ from PIL import Image
 from torch.utils.data.sampler import BatchSampler, Sampler
 from torch.utils.model_zoo import tqdm
 
-from my_utils import TransformedSubset
+from custom_types import TransformedSubset
 
 
 def _repeat_to_at_least(iterable, n):

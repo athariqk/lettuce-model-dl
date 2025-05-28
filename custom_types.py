@@ -1,10 +1,9 @@
 import torch
-from torch import Tensor
 
 
 class DualTensor:
-    def __init__(self, x: Tensor, y: Tensor):
-        if not (isinstance(x, Tensor) and isinstance(y, Tensor)):
+    def __init__(self, x: torch.Tensor, y: torch.Tensor):
+        if not (isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor)):
             raise TypeError("Both x and y must be a tensor.")
         self.x = x
         self.y = y
@@ -69,3 +68,30 @@ class DualTensor:
         batched_tensor_b = torch.stack([dt.y for dt in list_of_dual_tensors], dim=0)
 
         return self(batched_tensor_a, batched_tensor_b)
+
+
+class TransformedSubset(torch.utils.data.Dataset):
+    def __init__(self, subset, transform):
+        self.subset = subset
+        self.transform = transform
+
+    def __getitem__(self, index):
+        data, target = self.subset[index]
+
+        if self.transform:
+            data, target = self.transform(data, target)
+            if isinstance(data, list) and len(data) == 2:
+                return DualTensor(data[0], data[1]), target
+
+        return data, target
+
+    def __len__(self):
+        return len(self.subset)
+
+    @property
+    def dataset(self):
+        return self.subset.dataset
+
+    @property
+    def indices(self):
+        return self.subset.indices

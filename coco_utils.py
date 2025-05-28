@@ -11,8 +11,8 @@ import torchvision
 from pycocotools import mask as coco_mask
 from pycocotools.coco import COCO
 
-import my_utils
 import transforms as T
+import custom_types
 
 
 def convert_coco_poly_to_mask(segmentations, height, width):
@@ -186,7 +186,7 @@ def get_coco_api_from_dataset(dataset):
             break
         if isinstance(dataset, torch.utils.data.Subset):
             dataset = dataset.dataset
-        if isinstance(dataset, my_utils.TransformedSubset):
+        if isinstance(dataset, custom_types.TransformedSubset):
             dataset = dataset.dataset
     if isinstance(dataset, torchvision.datasets.CocoDetection):
         return dataset.coco

@@ -9,6 +9,7 @@ import torchvision
 import torchvision.ops._utils
 from sklearn.model_selection import KFold
 
+import custom_types
 from coco_eval import CocoEvaluator
 from coco_utils import get_coco, get_coco_kp, get_coco_online
 from dataset import get_lettuce_data, get_lettuce_data_no_h
@@ -193,8 +194,8 @@ def k_fold_training(args, num_classes, full_dataset, device):
         train_subset = torch.utils.data.Subset(full_dataset, train_idx)
         test_subset = torch.utils.data.Subset(full_dataset, test_idx)
 
-        train_dataset_for_loader = utils.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
-        test_dataset_for_loader = utils.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
+        train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
+        test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
 
         if args.distributed:
             # Distributed samplers need to be aware of the subset

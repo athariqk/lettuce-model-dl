@@ -8,7 +8,7 @@ import transforms as reference_transforms
 
 import albumentations as A
 
-from neural_networks.types import DualTensor
+from custom_types import DualTensor
 
 
 def get_modules(use_v2):

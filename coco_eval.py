@@ -66,23 +66,23 @@ class CocoEvaluator:
         # Consolidate img_ids from this batch for COCO part, handled in synchronize
         self.img_ids.extend(img_ids_list_for_coco)
 
-        print(f"DEBUG_PRINT: Starting phenotype matching section.")
-        print(f"DEBUG_PRINT:   self.phenotype_names: {self.phenotype_names}")
-        print(f"DEBUG_PRINT:   targets_for_pheno is {'available' if targets_for_pheno else 'None'}")
+        # print(f"DEBUG_PRINT: Starting phenotype matching section.")
+        # print(f"DEBUG_PRINT:   self.phenotype_names: {self.phenotype_names}")
+        # print(f"DEBUG_PRINT:   targets_for_pheno is {'available' if targets_for_pheno else 'None'}")
 
         if self.phenotype_names and targets_for_pheno:
-            print(f"DEBUG_PRINT: Proceeding with phenotype matching.")
+            # print(f"DEBUG_PRINT: Proceeding with phenotype matching.")
             cpu_device = torch.device("cpu")
             config_expected_num_features = len(self.phenotype_names)
-            print(f"DEBUG_PRINT:   config_expected_num_features: {config_expected_num_features}")
+            # print(f"DEBUG_PRINT:   config_expected_num_features: {config_expected_num_features}")
 
             for original_id, output_dict in predictions.items():
-                print(f"DEBUG_PRINT: Processing phenotypes for original_id: {original_id}")
+                # print(f"DEBUG_PRINT: Processing phenotypes for original_id: {original_id}")
 
                 if original_id not in targets_for_pheno:
                     print(f"DEBUG_PRINT:   original_id {original_id} not in targets_for_pheno. Skipping.")
                     continue
-                print(f"DEBUG_PRINT:   original_id {original_id} found in targets_for_pheno.")
+                # print(f"DEBUG_PRINT:   original_id {original_id} found in targets_for_pheno.")
 
                 target_dict = targets_for_pheno[original_id]
 
@@ -95,8 +95,8 @@ class CocoEvaluator:
                         print(
                             f"DEBUG_PRINT:   Missing 'boxes' or 'phenotypes' in target_dict for {original_id}. Skipping.")
                         continue
-                    print(
-                        f"DEBUG_PRINT:   'boxes' and 'phenotypes' keys found in both output_dict and target_dict for {original_id}.")
+                    # print(
+                    #     f"DEBUG_PRINT:   'boxes' and 'phenotypes' keys found in both output_dict and target_dict for {original_id}.")
 
                     gt_boxes = target_dict["boxes"].to(cpu_device)
                     gt_phenotypes = target_dict["phenotypes"].to(cpu_device)
@@ -106,15 +106,15 @@ class CocoEvaluator:
 
                     num_gt = gt_boxes.shape[0]
                     num_pred = pred_boxes.shape[0]
-                    print(f"DEBUG_PRINT:   num_gt: {num_gt}, num_pred: {num_pred} for {original_id}")
+                    # print(f"DEBUG_PRINT:   num_gt: {num_gt}, num_pred: {num_pred} for {original_id}")
 
                     if num_gt == 0 or num_pred == 0:
                         print(
                             f"DEBUG_PRINT:   num_gt or num_pred is 0 for {original_id}. Skipping phenotype matching for this image.")
                         continue
 
-                    print(
-                        f"DEBUG_PRINT:   gt_phenotypes shape: {gt_phenotypes.shape}, pred_phenotypes shape: {pred_phenotypes.shape}")
+                    # print(
+                    #     f"DEBUG_PRINT:   gt_phenotypes shape: {gt_phenotypes.shape}, pred_phenotypes shape: {pred_phenotypes.shape}")
 
                     if gt_phenotypes.ndim != 2 or pred_phenotypes.ndim != 2:
                         print(
@@ -123,8 +123,8 @@ class CocoEvaluator:
 
                     data_num_features_gt = gt_phenotypes.shape[1]
                     data_num_features_pred = pred_phenotypes.shape[1]
-                    print(
-                        f"DEBUG_PRINT:   data_num_features_gt: {data_num_features_gt}, data_num_features_pred: {data_num_features_pred} for {original_id}")
+                    # print(
+                    #     f"DEBUG_PRINT:   data_num_features_gt: {data_num_features_gt}, data_num_features_pred: {data_num_features_pred} for {original_id}")
 
                     if data_num_features_gt != data_num_features_pred:
                         print(
@@ -132,8 +132,8 @@ class CocoEvaluator:
                         continue
 
                     current_image_data_features = data_num_features_gt
-                    print(
-                        f"DEBUG_PRINT:   current_image_data_features: {current_image_data_features} for {original_id}")
+                    # print(
+                    #     f"DEBUG_PRINT:   current_image_data_features: {current_image_data_features} for {original_id}")
 
                     if current_image_data_features == 0:
                         print(
@@ -151,14 +151,14 @@ class CocoEvaluator:
                             f"feature count ({config_expected_num_features}) for image {original_id}. Skipping.")
                         continue
 
-                    print(
-                        f"DEBUG_PRINT:   All phenotype feature checks passed for {original_id}. Proceeding with matching.")
+                    # print(
+                    #     f"DEBUG_PRINT:   All phenotype feature checks passed for {original_id}. Proceeding with matching.")
 
                     iou_matrix = torchvision.ops.box_iou(gt_boxes.float(), pred_boxes.float())
                     matched_pred_indices = set()
 
                     for gt_idx in range(num_gt):
-                        print(f"DEBUG_PRINT:     Matching for gt_idx: {gt_idx}")
+                        # print(f"DEBUG_PRINT:     Matching for gt_idx: {gt_idx}")
                         best_iou_for_this_gt = -1.0
                         best_pred_idx_for_this_gt = -1
                         for pred_idx in range(num_pred):
@@ -169,22 +169,25 @@ class CocoEvaluator:
                                 best_iou_for_this_gt = current_iou
                                 best_pred_idx_for_this_gt = pred_idx
 
-                        print(
-                            f"DEBUG_PRINT:       gt_idx {gt_idx}: best_iou_for_this_gt: {best_iou_for_this_gt}, best_pred_idx_for_this_gt: {best_pred_idx_for_this_gt}")
-                        print(f"DEBUG_PRINT:       self.phenotype_iou_threshold: {self.phenotype_iou_threshold}")
+                        # print(
+                        #     f"DEBUG_PRINT:       gt_idx {gt_idx}: best_iou_for_this_gt: {best_iou_for_this_gt}, best_pred_idx_for_this_gt: {best_pred_idx_for_this_gt}")
+                        # print(f"DEBUG_PRINT:       self.phenotype_iou_threshold: {self.phenotype_iou_threshold}")
 
                         if best_iou_for_this_gt >= self.phenotype_iou_threshold and best_pred_idx_for_this_gt != -1:
-                            print(
-                                f"DEBUG_PRINT:         Match found for gt_idx {gt_idx} with pred_idx {best_pred_idx_for_this_gt} (IoU: {best_iou_for_this_gt:.4f})")
-                            gt_pheno_to_add = gt_phenotypes[gt_idx].squeeze().cpu().numpy()
-                            pred_pheno_to_add = pred_phenotypes[best_pred_idx_for_this_gt].squeeze().cpu().numpy()
-                            print(
-                                f"DEBUG_PRINT:           gt_pheno_to_add shape: {gt_pheno_to_add.shape}, pred_pheno_to_add shape: {pred_pheno_to_add.shape}")
+                            # print(
+                            #     f"DEBUG_PRINT:         Match found for gt_idx {gt_idx} with pred_idx {best_pred_idx_for_this_gt} (IoU: {best_iou_for_this_gt:.4f})")
+                            gt_pheno_val = gt_phenotypes[gt_idx]
+                            pred_pheno_val = pred_phenotypes[best_pred_idx_for_this_gt]
+
+                            gt_pheno_to_add = np.atleast_1d(gt_pheno_val.squeeze().cpu().numpy())
+                            pred_pheno_to_add = np.atleast_1d(pred_pheno_val.squeeze().cpu().numpy())
+                            # print(
+                            #     f"DEBUG_PRINT:           gt_pheno_to_add shape: {gt_pheno_to_add.shape}, pred_pheno_to_add shape: {pred_pheno_to_add.shape}")
 
                             if gt_pheno_to_add.ndim == 1 and gt_pheno_to_add.shape[0] == current_image_data_features and \
                                     pred_pheno_to_add.ndim == 1 and pred_pheno_to_add.shape[
                                 0] == current_image_data_features:
-                                print(f"DEBUG_PRINT:             Phenotype shapes valid. Appending to lists.")
+                                # print(f"DEBUG_PRINT:             Phenotype shapes valid. Appending to lists.")
                                 self.all_gt_phenotypes.append(gt_pheno_to_add)
                                 self.all_pred_phenotypes.append(pred_pheno_to_add)
                                 matched_pred_indices.add(best_pred_idx_for_this_gt)
@@ -196,15 +199,15 @@ class CocoEvaluator:
                             print(f"DEBUG_PRINT:         No sufficient IoU match for gt_idx {gt_idx}.")
 
                 except Exception as e:
-                    print(f"DEBUG_PRINT:   ERROR during phenotype matching for image {original_id}: {e}")
+                    # print(f"DEBUG_PRINT:   ERROR during phenotype matching for image {original_id}: {e}")
                     import traceback
                     traceback.print_exc()
                     continue
-            print(
-                f"DEBUG_PRINT:   Finished processing batch. self.all_gt_phenotypes size: {len(self.all_gt_phenotypes)}, self.all_pred_phenotypes size: {len(self.all_pred_phenotypes)}")
-        else:
-            print(
-                f"DEBUG_PRINT: Skipping phenotype matching block because self.phenotype_names is falsy or targets_for_pheno is not provided.")
+        #     print(
+        #         f"DEBUG_PRINT:   Finished processing batch. self.all_gt_phenotypes size: {len(self.all_gt_phenotypes)}, self.all_pred_phenotypes size: {len(self.all_pred_phenotypes)}")
+        # else:
+        #     print(
+        #         f"DEBUG_PRINT: Skipping phenotype matching block because self.phenotype_names is falsy or targets_for_pheno is not provided.")
 
 
     def synchronize_between_processes(self):
@@ -332,7 +335,7 @@ class CocoEvaluator:
                         self.phenotype_metrics_results[name]['nrmse'] = nrmse
 
                         print(
-                            f"  {name:<20} R-squared: {r2:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}%, NRMSE (std): {nrmse:.4f}")
+                            f"  {name:<20} R-squared: {r2:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}, NRMSE (std): {nrmse:.4f}")
                     except Exception as e:
                         print(f"  {name:<20} Error calculating metrics for this phenotype: {e}")
                 else:

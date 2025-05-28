@@ -10,7 +10,6 @@ from torchvision.transforms.v2 import functional as F
 from PIL import Image
 
 from coco_utils import _coco_remove_images_without_annotations
-from neural_networks.types import DualTensor
 
 
 class LettuceRGBDDataset(VisionDataset):

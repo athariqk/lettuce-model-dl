@@ -17,7 +17,7 @@ import torchvision.transforms.v2 as transforms
 
 from my_utils import ROOT_DIR
 from neural_networks.blocks import AFF
-from neural_networks.types import DualTensor
+from custom_types import DualTensor
 
 
 class Modified_SSDLiteMobileViT(nn.Module):
