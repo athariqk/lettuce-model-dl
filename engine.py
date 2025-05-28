@@ -100,7 +100,7 @@ def evaluate(model, data_loader, device):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
 
-    phenotype_names_list = ["fresh_weight", "height"]
+    phenotype_names_list = ["fresh_weight"]
 
     coco = get_coco_api_from_dataset(data_loader.dataset)
     iou_types = _get_iou_types(model)
