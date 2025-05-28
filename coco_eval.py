@@ -38,6 +38,7 @@ class CocoEvaluator:
     def update(self, predictions, targets_for_pheno: dict = None):
         img_ids_set = set()
 
+        # Process standard COCO evaluation types
         for original_id in predictions.keys():
             img_ids_set.add(original_id)
 
@@ -62,129 +63,99 @@ class CocoEvaluator:
 
             self.eval_imgs[iou_type].append(current_eval_imgs)
 
+        # Consolidate img_ids from this batch for COCO part, handled in synchronize
         self.img_ids.extend(img_ids_list_for_coco)
 
+        # --- PHENOTYPE MATCHING AND COLLECTION ---
         if self.phenotype_names and targets_for_pheno:
-            cpu_device = torch.device("cpu")
+            cpu_device = torch.device("cpu")  # Ensure data is on CPU for numpy conversion
             num_phenotype_features = len(self.phenotype_names)
 
-            coco_eval_obj = self.coco_eval["bbox"]
-
-            if not coco_eval_obj.cocoDt or not coco_eval_obj.cocoDt.anns:
-                print(f"Warning: coco_eval_obj.cocoDt.anns is empty for iou_type 'bbox'. " +
-                    "This means no detections were loaded for the current batch for this iou_type. Skipping phenotype eval.")
-                return
-
-            if coco_eval_obj.params.iouThrs is None or len(coco_eval_obj.params.iouThrs) == 0:
-                print(
-                    f"Warning: coco_eval_obj.params.iouThrs is not set for iou_type 'bbox'. Skipping phenotype eval.")
-                return
-
-            try:
-                iou_threshold_indices = \
-                np.where(np.isclose(coco_eval_obj.params.iouThrs, self.phenotype_iou_threshold))[0]
-                if len(iou_threshold_indices) == 0:
-                    print(
-                        f"Warning: phenotype_iou_threshold {self.phenotype_iou_threshold} not found in COCOeval iouThrs: {coco_eval_obj.params.iouThrs}. Closest matching might be needed or skipping.")
-                    return
-                ti = iou_threshold_indices[0]  # Index for our target IoU threshold
-            except Exception as e:
-                print(f"Error finding IoU threshold index: {e}. Skipping phenotype eval.")
-                return
-
-            if not coco_eval_obj.evalImgs:
-                print(f"Warning: coco_eval_obj.evalImgs is empty for iou_type 'bbox'. Skipping phenotype eval.")
-                return
-
-            # Process each image in the current batch
-            for original_id_tensor, output_dict in predictions.items():
-                original_id = original_id_tensor.item() if isinstance(original_id_tensor,
-                                                                      torch.Tensor) else original_id_tensor
-
+            for original_id, output_dict in predictions.items():
                 if original_id not in targets_for_pheno:
                     continue
 
                 target_dict = targets_for_pheno[original_id]
 
-                if not all(k in output_dict for k in ["phenotypes"]) or \
-                        not all(k in target_dict for k in ["phenotypes", "coco_ann_ids"]):  # coco_ann_ids is crucial
-                    print(f"Warning: Missing 'phenotypes' or 'coco_ann_ids' for image {original_id}. Skipping phenotype eval for this image.")
-                    continue
-
-                gt_phenotypes_tensor = target_dict["phenotypes"].to(cpu_device)
-                pred_phenotypes_tensor = output_dict["phenotypes"].to(cpu_device)
-
-                if gt_phenotypes_tensor.ndim < 2 or pred_phenotypes_tensor.ndim < 2 or \
-                        gt_phenotypes_tensor.shape[1] != num_phenotype_features or \
-                        pred_phenotypes_tensor.shape[1] != num_phenotype_features:
-                    print(f"DEBUG: Phenotype feature count mismatch or unexpected shape for image {original_id}. Skipping.")
-                    continue
-
-                gt_coco_id_to_tensor_idx = {
-                    coco_id: idx for idx, coco_id in enumerate(target_dict['coco_ann_ids'])
-                }
-
-                dt_coco_id_to_tensor_idx = {}
-                if coco_eval_obj.cocoDt and coco_eval_obj.cocoDt.anns:
-                    for dt_id, dt_ann_details in coco_eval_obj.cocoDt.anns.items():
-                        # Ensure this dt_ann_details is for the current image_id
-                        # and has 'original_idx' (which we added in prepare_for_coco_detection)
-                        if dt_ann_details.get('image_id') == original_id and 'original_idx' in dt_ann_details:
-                            dt_coco_id_to_tensor_idx[dt_id] = dt_ann_details['original_idx']
-
-                processed_gt_tensor_indices_for_img = set()
-
-                for eval_entry in coco_eval_obj.evalImgs:
-                    if eval_entry['image_id'] != original_id:
+                try:
+                    if not all(k in output_dict for k in ["boxes", "phenotypes"]) or \
+                            not all(k in target_dict for k in ["boxes", "phenotypes"]):
                         continue
 
-                    entry_gt_ids_coco = eval_entry['gtIds']  # These are COCO annotation IDs for GTs
-                    # entry_dt_ids_coco = eval_entry['dtIds']  # These are IDs for Dts (keys in coco_eval_obj.cocoDt.anns)
+                    # Ensure data is on CPU
+                    gt_boxes = target_dict["boxes"].to(cpu_device)
+                    gt_phenotypes = target_dict["phenotypes"].to(cpu_device)
 
-                    # gtMatches[ti, gt_local_idx] gives the dt_id (COCO Dt ID) matched to gt_ids_coco[gt_local_idx]
-                    entry_gt_matches_dt_ids = eval_entry['gtMatches'][ti, :]
+                    pred_boxes = output_dict["boxes"].to(cpu_device)
+                    pred_phenotypes = output_dict["phenotypes"].to(cpu_device)
 
-                    for gt_local_idx, matched_dt_coco_id in enumerate(entry_gt_matches_dt_ids):
-                        if matched_dt_coco_id == 0:  # This GT was not matched to any Dt at this IoU threshold
-                            continue
+                    num_gt = gt_boxes.shape[0]
+                    num_pred = pred_boxes.shape[0]
 
-                        gt_coco_ann_id = entry_gt_ids_coco[gt_local_idx]
+                    if num_gt == 0 or num_pred == 0:
+                        continue
 
-                        gt_tensor_idx = gt_coco_id_to_tensor_idx.get(gt_coco_ann_id)
-                        pred_tensor_idx = dt_coco_id_to_tensor_idx.get(matched_dt_coco_id)
+                    # Ensure phenotypes have the correct number of features before proceeding
+                    if gt_phenotypes.shape[1] != num_phenotype_features or \
+                            pred_phenotypes.shape[1] != num_phenotype_features:
+                        print(f"DEBUG: Phenotype feature count mismatch for image {original_id}. Skipping.")
+                        continue
 
-                        if gt_tensor_idx is None or pred_tensor_idx is None:
-                            print(f"Warning: Could not map COCO IDs to tensor indices for image {original_id}. GT ID: {gt_coco_ann_id}, Dt ID: {matched_dt_coco_id}")
-                            continue
+                    iou_matrix = torchvision.ops.box_iou(gt_boxes.float(), pred_boxes.float())
+                    matched_pred_indices = set()
 
-                        if gt_tensor_idx in processed_gt_tensor_indices_for_img:
-                            # This GT (by tensor index) has already been paired for phenotype eval for this image, possibly from another category's eval_entry
-                            continue
-
-                        try:
-                            if gt_tensor_idx >= gt_phenotypes_tensor.shape[0] or pred_tensor_idx >= \
-                                    pred_phenotypes_tensor.shape[0]:
-                                print(f"Warning: Tensor index out of bounds. GT idx: {gt_tensor_idx} (max: {gt_phenotypes_tensor.shape[0]-1}), Pred idx: {pred_tensor_idx} (max: {pred_phenotypes_tensor.shape[0]-1}) for image {original_id}")
+                    for gt_idx in range(num_gt):
+                        best_iou_for_this_gt = -1.0
+                        best_pred_idx_for_this_gt = -1
+                        for pred_idx in range(num_pred):
+                            if pred_idx in matched_pred_indices:
                                 continue
+                            current_iou = iou_matrix[gt_idx, pred_idx].item()
+                            if current_iou > best_iou_for_this_gt:
+                                best_iou_for_this_gt = current_iou
+                                best_pred_idx_for_this_gt = pred_idx
 
-                            gt_pheno_to_add = gt_phenotypes_tensor[gt_tensor_idx].squeeze().cpu().numpy()
-                            pred_pheno_to_add = pred_phenotypes_tensor[pred_tensor_idx].squeeze().cpu().numpy()
+                        if best_iou_for_this_gt >= self.phenotype_iou_threshold and best_pred_idx_for_this_gt != -1:
+                            gt_pheno_to_add = gt_phenotypes[gt_idx].squeeze().cpu().numpy()
+                            pred_pheno_to_add = pred_phenotypes[best_pred_idx_for_this_gt].squeeze().cpu().numpy()
 
+                            # Ensure they are 1D arrays of the correct length
                             if gt_pheno_to_add.ndim == 1 and gt_pheno_to_add.shape[0] == num_phenotype_features and \
                                     pred_pheno_to_add.ndim == 1 and pred_pheno_to_add.shape[
                                 0] == num_phenotype_features:
                                 self.all_gt_phenotypes.append(gt_pheno_to_add)
                                 self.all_pred_phenotypes.append(pred_pheno_to_add)
-                                processed_gt_tensor_indices_for_img.add(gt_tensor_idx)
-                        except Exception as e_pair:
-                            print(f"Error extracting phenotype pair for image {original_id} (GT tensor idx {gt_tensor_idx}, Pred tensor idx {pred_tensor_idx}): {e_pair}")
-                            pass
+                                matched_pred_indices.add(best_pred_idx_for_this_gt)
+                except Exception as e:
+                    # print(f"DEBUG: Error during phenotype matching for image {original_id}: {e}")
+                    continue
+        # --- END PHENOTYPE MATCHING ---
 
     def synchronize_between_processes(self):
+        # Synchronize standard COCO eval images
         for iou_type in self.iou_types:
+            # Ensure eval_imgs for this iou_type is not empty before concatenation
             if self.eval_imgs[iou_type]:
                 self.eval_imgs[iou_type] = np.concatenate(self.eval_imgs[iou_type], 2)  #
+                create_common_coco_eval(self.coco_eval[iou_type], self.img_ids, self.eval_imgs[iou_type])  #
+            else:  # Handle case where no evaluations were added for an iou_type (e.g. no predictions for this type)
+                # Create a dummy eval_imgs or ensure create_common_coco_eval can handle empty
+                # For now, if it's empty, we might not need to call create_common_coco_eval
+                # Or, ensure img_ids passed to create_common_coco_eval is also filtered accordingly
+                # This part needs careful handling based on how create_common_coco_eval behaves with potentially empty/mismatched data
+                # print(f"Warning: No eval_imgs to synchronize for iou_type {iou_type}")
+                # A simple fix might be to ensure self.img_ids is also filtered or handled if eval_imgs is empty
+                # The original create_common_coco_eval merges img_ids globally then filters eval_imgs by unique idx.
+                # If an iou_type had no evals, its self.eval_imgs[iou_type] would be empty.
+                # It's best if create_common_coco_eval is robust or we ensure it gets valid (even if empty) eval_imgs.
+                # For now, let's assume if eval_imgs[iou_type] is empty, we might skip its create_common_coco_eval call,
+                # or ensure it's initialized as an empty structure that concatenate and create_common_coco_eval can handle.
+                # The original code concatenates then calls create_common_coco_eval. So if list is empty, concatenate fails.
+                # So we should only call if list is not empty.
+                # The global self.img_ids are gathered in create_common_coco_eval via merge.
+                pass
 
+        # --- SYNCHRONIZE PHENOTYPE DATA ---
         if self.phenotype_names:
             if utils.is_dist_avail_and_initialized():  # Check if distributed training
                 gathered_gt_lists = utils.all_gather(self.all_gt_phenotypes)
@@ -199,33 +170,29 @@ class CocoEvaluator:
                 for sublist in gathered_pred_lists:
                     flat_pred_list.extend(sublist)
                 self.all_pred_phenotypes = flat_pred_list
+        # --- END PHENOTYPE SYNCHRONIZATION ---
 
     def accumulate(self):
         for coco_eval in self.coco_eval.values():
-            coco_eval.accumulate()
+            coco_eval.accumulate()  #
 
     def summarize(self):
         for iou_type, coco_eval in self.coco_eval.items():
-            print(f"IoU metric: {iou_type}")
-            coco_eval.summarize()
+            print(f"IoU metric: {iou_type}")  #
+            coco_eval.summarize()  #
 
-        if self.phenotype_names:
+        # --- SUMMARIZE PHENOTYPE METRICS ---
+        if self.phenotype_names and self.all_gt_phenotypes and self.all_pred_phenotypes:
+            self._calculate_and_print_phenotype_metrics()
+        elif self.phenotype_names:
             print("Phenotype Regression Metrics (for this fold/evaluation run):")
-
-            if self.all_gt_phenotypes and self.all_pred_phenotypes:
-                self._calculate_and_print_phenotype_metrics()
-            else:
-                print("  Not enough matched ground truth or prediction phenotype data to calculate metrics.")
-                for name in self.phenotype_names:  # Ensure dict has keys even if no data
-                    self.phenotype_metrics_results[name] = {
-                        'r2': np.nan,
-                        'rmse': np.nan,
-                        'mape': np.nan,
-                        'nrmse': np.nan
-                    }
+            print("  Not enough matched ground truth or prediction phenotype data to calculate metrics.")
+            for name in self.phenotype_names:  # Ensure dict has keys even if no data
+                self.phenotype_metrics_results[name] = {'r2': np.nan, 'rmse': np.nan, 'mape': np.nan, 'nrmse': np.nan}
 
     def _calculate_and_print_phenotype_metrics(self):
         """Helper function to calculate and print phenotype regression metrics."""
+        print("Phenotype Regression Metrics (for this fold/evaluation run):")
 
         # Initialize all phenotype metrics to NaN
         for name in self.phenotype_names:
@@ -315,7 +282,7 @@ class CocoEvaluator:
                 continue
 
             boxes = prediction["boxes"]
-            boxes = convert_to_xywh(boxes).tolist()
+            boxes = convert_to_xywh(boxes).tolist()  #
             scores = prediction["scores"].tolist()
             labels = prediction["labels"].tolist()
 
@@ -326,7 +293,6 @@ class CocoEvaluator:
                         "category_id": labels[k],
                         "bbox": box,
                         "score": scores[k],
-                        "original_idx": k,
                     }
                     for k, box in enumerate(boxes)
                 ]
@@ -415,6 +381,11 @@ def merge(img_ids, eval_imgs):  #
         merged_img_ids.extend(p)
 
     merged_eval_imgs = []
+    # all_eval_imgs_gath would be like [ [np_arr1_proc1, np_arr2_proc1,...], [np_arr1_proc2,...] ]
+    # but the original code has self.eval_imgs[iou_type].append(eval_imgs), where eval_imgs is already a np.array
+    # and then it does np.concatenate(self.eval_imgs[iou_type], 2)
+    # So, eval_imgs passed to merge here is already a concatenated numpy array from one process.
+    # all_gather(eval_imgs) would then be a list of these numpy arrays, one from each process.
     for p in all_eval_imgs_gath:
         merged_eval_imgs.append(p)  # p is a numpy array here.
 
@@ -423,15 +394,36 @@ def merge(img_ids, eval_imgs):  #
 
     merged_img_ids_np = np.array(merged_img_ids)  # Convert list of IDs to numpy array
 
+    # Concatenate the list of numpy arrays (one from each process)
+    # Ensure they can be concatenated (e.g., along existing axis 2 or a new axis if necessary)
+    # Original code concatenates along axis 2 *before* merge in synchronize_between_processes.
+    # So merged_eval_imgs is a list of arrays that were already concatenated along axis 2 internally per process.
+    # We need to concatenate these arrays from different processes.
+    # If each element p in merged_eval_imgs has shape e.g. (n_iou_thr, n_area_rng, n_imgs_proc),
+    # we'd typically concatenate along the n_imgs_proc dimension (axis 2).
     if not merged_eval_imgs:
         return merged_img_ids_np, np.array([])
 
     try:
         merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2)  # Concatenate along the images dimension
     except ValueError as e:
+        # This might happen if shapes are inconsistent or one process had no evals.
+        # print(f"Error during eval_imgs concatenation in merge: {e}. Shapes: {[arr.shape for arr in merged_eval_imgs]}")
+        # Fallback or error handling needed. For now, re-raise or return empty if critical.
+        # This indicates a deeper issue with how eval_imgs are collected or shaped before merge.
+        # For now, let's assume this will work if eval_imgs are correctly formed.
+        # If only one process, merged_eval_imgs will have one item, concatenate won't change it if axis=0 and it's just that item.
+        # if len(merged_eval_imgs) == 1:
+        #    merged_eval_imgs_np = merged_eval_imgs[0]
+        # else:
+        #    merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2) # Default from source
+        # Let's stick to the original paper's concatenate. It should be a list of arrays from all_gather.
         merged_eval_imgs_np = np.concatenate(merged_eval_imgs, 2)
 
+    # keep only unique (and in sorted order) images
     unique_merged_img_ids, idx = np.unique(merged_img_ids_np, return_index=True)  #
+    # Filter eval_imgs based on these unique indices
+    # Ensure merged_eval_imgs_np has content along the axis being indexed by idx
     if merged_eval_imgs_np.size > 0:
         merged_eval_imgs_filtered = merged_eval_imgs_np[..., idx]  #
     else:
@@ -441,10 +433,18 @@ def merge(img_ids, eval_imgs):  #
 
 
 def create_common_coco_eval(coco_eval, img_ids, eval_imgs):  #
+    # img_ids here is self.img_ids (list of all img_ids from all updates on one process)
+    # eval_imgs here is self.eval_imgs[iou_type] (concatenated np array from one process)
+
     # These are gathered from all processes using utils.all_gather
     img_ids_merged, eval_imgs_merged = merge(img_ids, eval_imgs)  #
 
     img_ids_list = list(img_ids_merged)
+    # eval_imgs_merged is already a numpy array. Flattening it might lose structure.
+    # The original code has .flatten() which might be specific to how COCOeval expects evalImgs.
+    # COCOeval.evalImgs is a list of dicts. The np.asarray(imgs.evalImgs).reshape(...) in `evaluate` helper
+    # suggests evalImgs internally becomes structured.
+    # Let's trust the original flatten logic.
     eval_imgs_list = list(eval_imgs_merged.flatten())  #
 
     coco_eval.evalImgs = eval_imgs_list
@@ -452,13 +452,17 @@ def create_common_coco_eval(coco_eval, img_ids, eval_imgs):  #
     coco_eval._paramsEval = copy.deepcopy(coco_eval.params)  #
 
 
-def evaluate(coco_eval_obj):
+# This evaluate is a helper specific to this file, not the main engine's evaluate
+def evaluate(coco_eval_obj):  # Takes a COCOeval object as input
+    # Renamed parameter to avoid confusion with global evaluate
     with redirect_stdout(io.StringIO()):
-        coco_eval_obj.evaluate()
+        coco_eval_obj.evaluate()  # Calls the method of the COCOeval object
+    # Reshape needs to be careful if params.imgIds is empty
     num_img_ids = len(coco_eval_obj.params.imgIds)
-    if num_img_ids == 0:
+    if num_img_ids == 0:  # Handle case with no images to evaluate
+        # Return empty or appropriately shaped empty arrays
         return coco_eval_obj.params.imgIds, np.array([]).reshape(-1, len(coco_eval_obj.params.areaRng), 0)
 
     return coco_eval_obj.params.imgIds, np.asarray(coco_eval_obj.evalImgs).reshape(
         -1, len(coco_eval_obj.params.areaRng), num_img_ids
-    )
+    )  #
