@@ -195,8 +195,8 @@ class CocoEvaluator:
                                 print(
                                     f"DEBUG_PRINT:             Squeezed phenotype arrays for image {original_id} do not match expected feature count {current_image_data_features}. "
                                     f"GT shape: {gt_pheno_to_add.shape} (ndim {gt_pheno_to_add.ndim}), Pred shape: {pred_pheno_to_add.shape} (ndim {pred_pheno_to_add.ndim}). Skipping this pair.")
-                        else:
-                            print(f"DEBUG_PRINT:         No sufficient IoU match for gt_idx {gt_idx}.")
+                        # else:
+                        #     print(f"DEBUG_PRINT:         No sufficient IoU match for gt_idx {gt_idx}.")
 
                 except Exception as e:
                     # print(f"DEBUG_PRINT:   ERROR during phenotype matching for image {original_id}: {e}")
