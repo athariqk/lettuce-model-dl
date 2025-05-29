@@ -91,7 +91,7 @@ def _get_iou_types(model):
 
 
 @torch.inference_mode()
-def evaluate(model, data_loader, device):
+def evaluate(model, data_loader, device, phenotype_names):
     n_threads = torch.get_num_threads()
     # FIXME remove this and make paste_masks_in_image run on the GPU
     torch.set_num_threads(1)
@@ -100,12 +100,9 @@ def evaluate(model, data_loader, device):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
 
-    # phenotype_names_list = ["fresh_weight", "height"]
-    phenotype_names_list = ["fresh_weight"]
-
     coco = get_coco_api_from_dataset(data_loader.dataset)
     iou_types = _get_iou_types(model)
-    coco_evaluator = CocoEvaluator(coco, iou_types, phenotype_names_list, 0.5)
+    coco_evaluator = CocoEvaluator(coco, iou_types, phenotype_names, 0.5)
 
     for images, targets in metric_logger.log_every(data_loader, 100, header):
         images = list(img.to(device) for img in images)

@@ -175,6 +175,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--k-folds", type=int, default=0,
                         help="Number of folds for K-Fold cross-validation. Set to 0 or 1 to disable K-Fold and use standard train/val split.")
 
+    parser.add_argument("--phenotype-names", nargs="+", type="str")
+
     return parser
 
 
@@ -317,7 +319,7 @@ def k_fold_training(args, num_classes, full_dataset, device):
                 utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
 
             # evaluate after every epoch
-            evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device)
+            evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
 
             if evaluator and evaluator.iou_types and evaluator.phenotype_metrics_results:
                 first_iou_type = evaluator.iou_types[0]  # Typically "bbox"
@@ -543,7 +545,7 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
 
     if args.test_only:
         torch.backends.cudnn.deterministic = True
-        evaluate(model, data_loader_test, device=device)
+        evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
         return
 
     print("Starting standard training (K-Fold is disabled or k_folds <= 1).")
@@ -567,7 +569,7 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
 
         # evaluate after every epoch
-        evaluate(model, data_loader_test, device=device)
+        evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
