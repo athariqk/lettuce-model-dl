@@ -171,7 +171,7 @@ class DetectionPresetLettuceRGBD:
             T.ConvertBoundingBoxFormat(tv_tensors.BoundingBoxFormat.XYXY),
             T.SanitizeBoundingBoxes(),
             T.ToPureTensor(),
-        ]) if not is_train else T.Compose([
+        ]) if is_train else T.Compose([
             T.ToImage(),
             T.ToDtype(torch.float, scale=True),
             T.ToPureTensor(),
