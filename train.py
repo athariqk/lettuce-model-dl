@@ -175,7 +175,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--k-folds", type=int, default=0,
                         help="Number of folds for K-Fold cross-validation. Set to 0 or 1 to disable K-Fold and use standard train/val split.")
 
-    parser.add_argument("--phenotype-names", nargs="+", type="str")
+    parser.add_argument("--phenotype-names", nargs="+", type=str)
 
     return parser
 
