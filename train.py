@@ -47,7 +47,10 @@ def get_dataset(is_train, args, no_transform: bool = False):
 def get_transform(is_train, args):
     if args.data_augmentation == "lettuce_rgbd":
         return presets.DetectionPresetLettuceRGBD(
-            is_train=is_train, phenotype_means=args.phenotype_means, phenotype_stds=args.phenotype_stds
+            is_train=is_train,
+            phenotype_means=args.phenotype_means,
+            phenotype_stds=args.phenotype_stds,
+            device=args.device
         )
 
     if is_train:
@@ -250,7 +253,8 @@ def k_fold_training(args, num_classes, full_dataset, device):
         if "rcnn" in args.model:
             if args.rpn_score_thresh is not None:
                 kwargs["rpn_score_thresh"] = args.rpn_score_thresh
-        # do the same for standard_training
+        kwargs["device"] = device
+         # do the same for standard_training
         if args.phenotype_loss_weight:
             kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
         if args.phenotype_means:

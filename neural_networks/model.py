@@ -67,8 +67,9 @@ class Modified_SSDLiteMobileViT(nn.Module):
             phenotype_means = [0.0, 0.0]
         if phenotype_stds is None:
             phenotype_stds = [1.0, 1.0]
-        self.phenotype_means = torch.Tensor(phenotype_means).unsqueeze(0)
-        self.phenotype_stds = torch.Tensor(phenotype_stds).unsqueeze(0)
+        device = kwargs["device"]
+        self.phenotype_means = torch.Tensor(phenotype_means).unsqueeze(0).to(device)
+        self.phenotype_stds = torch.Tensor(phenotype_stds).unsqueeze(0).to(device)
 
         self.proposal_matcher = SSDMatcher(iou_thresh)
         self.anchor_generator = DefaultBoxGenerator(aspect_ratios, min_ratio=0.1, max_ratio=1.05)
