@@ -50,7 +50,6 @@ def get_transform(is_train, args):
             is_train=is_train,
             phenotype_means=args.phenotype_means,
             phenotype_stds=args.phenotype_stds,
-            device=args.device
         )
 
     if is_train:

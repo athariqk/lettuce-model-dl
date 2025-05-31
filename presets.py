@@ -159,7 +159,7 @@ class DetectionPresetTrainAlbumentation:
         return self.transforms(img, target)
 
 class DetectionPresetLettuceRGBD:
-    def __init__(self, is_train: bool, phenotype_means: List[float], phenotype_stds: List[float], device):
+    def __init__(self, is_train: bool, phenotype_means: List[float], phenotype_stds: List[float]):
         T, tv_tensors = get_modules(True)
 
         self.transforms = T.Compose([
@@ -181,8 +181,8 @@ class DetectionPresetLettuceRGBD:
             phenotype_means = [0.0, 0.0]
         if phenotype_stds is None:
             phenotype_stds = [1.0, 1.0]
-        self.phenotype_means = torch.tensor(phenotype_means).unsqueeze(0).to(device)
-        self.phenotype_stds = torch.tensor(phenotype_stds).unsqueeze(0).to(device)
+        self.phenotype_means = torch.tensor(phenotype_means).unsqueeze(0)
+        self.phenotype_stds = torch.tensor(phenotype_stds).unsqueeze(0)
 
         self.is_train = is_train
 
