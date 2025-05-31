@@ -29,6 +29,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
             aspect_ratios: List[List[int]],
             image_mean: Optional[List[float]] = None,
             image_std: Optional[List[float]] = None,
+            phenotype_means: Optional[List[float]] = None,
+            phenotype_stds: Optional[List[float]] = None,
             score_thresh: float = 0.01,
             nms_thresh: float = 0.5,
             detections_per_img: int = 200,
@@ -60,6 +62,13 @@ class Modified_SSDLiteMobileViT(nn.Module):
         self.transform = GeneralizedRCNNTransform(
             min(size), max(size), image_mean, image_std, size_divisible=1, fixed_size=size, **kwargs
         )
+
+        if phenotype_means is None:
+            phenotype_means = [0.0, 0.0]
+        if phenotype_stds is None:
+            phenotype_stds = [1.0, 1.0]
+        self.phenotype_means = torch.Tensor(phenotype_means).unsqueeze(0)
+        self.phenotype_stds = torch.Tensor(phenotype_stds).unsqueeze(0)
 
         self.proposal_matcher = SSDMatcher(iou_thresh)
         self.anchor_generator = DefaultBoxGenerator(aspect_ratios, min_ratio=0.1, max_ratio=1.05)
@@ -355,7 +364,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 num_topk = _topk_min(score, self.topk_candidates, 0)
                 score, idxs = score.topk(num_topk)
                 box = box[idxs]
-                phenotype = phenotype[idxs]
+                phenotype = (phenotype[idxs] * self.phenotype_stds) + self.phenotype_means # denormalize
 
                 image_boxes.append(box)
                 image_scores.append(score)

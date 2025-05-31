@@ -1,6 +1,6 @@
 from collections import defaultdict
 import functools
-from typing import Tuple
+from typing import Tuple, List
 
 import cv2
 import torch
@@ -159,7 +159,7 @@ class DetectionPresetTrainAlbumentation:
         return self.transforms(img, target)
 
 class DetectionPresetLettuceRGBD:
-    def __init__(self, is_train: bool):
+    def __init__(self, is_train: bool, phenotype_means: List[float], phenotype_stds: List[float]):
         T, tv_tensors = get_modules(True)
 
         self.transforms = T.Compose([
@@ -177,6 +177,15 @@ class DetectionPresetLettuceRGBD:
             T.ToPureTensor(),
         ])
 
+        if phenotype_means is None:
+            phenotype_means = [0.0, 0.0]
+        if phenotype_stds is None:
+            phenotype_stds = [1.0, 1.0]
+        self.phenotype_means = torch.tensor(phenotype_means).unsqueeze(0)
+        self.phenotype_stds = torch.tensor(phenotype_stds).unsqueeze(0)
+
+        self.is_train = is_train
+
         # self.color_transforms = T.Compose([
         #     T.RandomPhotometricDistort(brightness=(0.5, 1.5),
         #                                contrast=(0.5, 1.5),
@@ -186,6 +195,13 @@ class DetectionPresetLettuceRGBD:
 
     def __call__(self, img, target):
         data, target = self.transforms(img, target)
+
+        if self.is_train:
+            phenotypes = target["phenotypes"]
+            # this is possible by broadcasting
+            normalized_phenotypes = (phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
+            target["phenotypes"] = normalized_phenotypes
+
         if isinstance(img, list) and len(img) == 2:
             return DualTensor(data[0], data[1]), target
         return data, target

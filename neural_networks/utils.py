@@ -49,12 +49,6 @@ def get_model(name: str, **kwargs) -> nn.Module:
         model = neural_networks.lettuce_model(**kwargs)
     elif "lettuce_model_no_height" == name:
         model = neural_networks.lettuce_model(with_height=False)
-    elif "lettuce_model_no_pheno" == name:
-        kwargs["phenotype_loss_weight"] = 0.0
-        model = neural_networks.lettuce_model(**kwargs)
-    elif "lettuce_model_no_ph" == name:
-        kwargs["phenotype_loss_weight"] = 0.0
-        model = neural_networks.lettuce_model(with_height=False, **kwargs)
     elif "baseline_model_80" == name:
         model = neural_networks.baseline_model("80")
     elif "baseline_model_90" == name:

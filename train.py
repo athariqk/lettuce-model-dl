@@ -8,6 +8,7 @@ import torch
 import torchvision
 import torchvision.ops._utils
 from sklearn.model_selection import KFold
+from sklearn.preprocessing import StandardScaler
 
 import custom_types
 from coco_eval import CocoEvaluator
@@ -45,7 +46,9 @@ def get_dataset(is_train, args, no_transform: bool = False):
 
 def get_transform(is_train, args):
     if args.data_augmentation == "lettuce_rgbd":
-        return presets.DetectionPresetLettuceRGBD(is_train=is_train)
+        return presets.DetectionPresetLettuceRGBD(
+            is_train=is_train, phenotype_means=args.phenotype_means, phenotype_stds=args.phenotype_stds
+        )
 
     if is_train:
         if "_alb" in args.data_augmentation:
@@ -176,6 +179,9 @@ def get_args_parser(add_help=True):
                         help="Number of folds for K-Fold cross-validation. Set to 0 or 1 to disable K-Fold and use standard train/val split.")
 
     parser.add_argument("--phenotype-names", nargs="+", type=str)
+    parser.add_argument("--phenotype-loss-weight", type=float)
+    parser.add_argument("--phenotype-means", required=True, nargs="+", type=float)
+    parser.add_argument("--phenotype-stds", required=True, nargs="+", type=float)
 
     return parser
 
@@ -244,6 +250,13 @@ def k_fold_training(args, num_classes, full_dataset, device):
         if "rcnn" in args.model:
             if args.rpn_score_thresh is not None:
                 kwargs["rpn_score_thresh"] = args.rpn_score_thresh
+        # do the same for standard_training
+        if args.phenotype_loss_weight:
+            kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
+        if args.phenotype_means:
+            kwargs["phenotype_means"] = args.phenotype_means
+        if args.phenotype_stds:
+            kwargs["phenotype_stds"] = args.phenotype_stds
 
         model = get_model(args.model, num_classes=num_classes, **kwargs)
 
@@ -262,6 +275,11 @@ def k_fold_training(args, num_classes, full_dataset, device):
         if args.distributed:
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
             model_without_ddp = model.module
+
+        if args.test_only:
+            torch.backends.cudnn.deterministic = True
+            evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
+            continue
 
         if args.norm_weight_decay is None:
             parameters = [p for p in model.parameters() if p.requires_grad]
