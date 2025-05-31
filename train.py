@@ -48,12 +48,14 @@ def get_transform(is_train, args):
     if args.data_augmentation == "lettuce_rgbd":
         return presets.DetectionPresetLettuceRGBD(
             is_train=is_train,
+            no_aug=False,
             phenotype_means=args.phenotype_means,
             phenotype_stds=args.phenotype_stds,
         )
     elif args.data_augmentation == "lettuce_rgbd_noaug":
         return presets.DetectionPresetLettuceRGBD(
-            is_train=False,
+            is_train=is_train,
+            no_aug=True,
             phenotype_means=args.phenotype_means,
             phenotype_stds=args.phenotype_stds,
         )
