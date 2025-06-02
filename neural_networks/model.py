@@ -1,50 +1,31 @@
 import copy
 import os
-import warnings
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
-from torchvision.models.detection._utils import BoxCoder, _topk_min
-from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
-from torchvision.ops import boxes as box_ops
 from torchvision.models.detection._utils import SSDMatcher
-from typing import Dict, List, Optional, Tuple, Sequence, NamedTuple
+from typing import Dict, List, Optional, Tuple
 from cvnets.models.detection.ssd import SingleShotMaskDetector
 import torchvision.transforms.v2 as transforms
 
 from my_utils import ROOT_DIR
 from neural_networks.blocks import AFF
 from custom_types import DualTensor
+from neural_networks.custom_types import LettuceDetectionOutputs
+from neural_networks.anchors import DefaultBoxGenerator
 
 
-class HeadOutputs(NamedTuple):
-    cls_logits: torch.Tensor      # Expected shape: [B, N, NumClasses]
-    bbox_regression: torch.Tensor # Expected shape: [B, N, 4]
-    phenotypes_pred: torch.Tensor # Expected shape: [B, N, NumPhenotypes]
-
-
-class Modified_SSDLiteMobileViT(nn.Module):
+class ModifiedSSDLiteMobileViTBase(nn.Module):
     """A modified SSDLite-MobileViT architecture for estimating lettuce growth phenotypes"""
 
     def __init__(
             self,
-            size: Tuple[int, int],
             aspect_ratios: List[List[int]],
-            image_mean: Optional[List[float]] = None,
-            image_std: Optional[List[float]] = None,
             phenotype_means: Optional[List[float]] = None,
             phenotype_stds: Optional[List[float]] = None,
-            score_thresh: float = 0.01,
-            nms_thresh: float = 0.5,
-            detections_per_img: int = 200,
-            topk_candidates: int = 400,
-            iou_thresh: float = 0.5,
             pretrained: str = None,
-            phenotype_loss_weight: float = 0.0001,
-            multimodal = False,
             **kwargs
     ):
         super().__init__()
@@ -55,20 +36,6 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         self.model: SingleShotMaskDetector = torch.load(pretrained, weights_only=False)
 
-        self.aux_encoder = copy.deepcopy(self.model.encoder) if multimodal else nn.Identity()
-
-        self.aff_0 = AFF(self.model.enc_l3_channels) if multimodal else nn.Identity()
-        self.aff_1 = AFF(self.model.enc_l4_channels) if multimodal else nn.Identity()
-        self.aff_2 = AFF(self.model.enc_l5_channels) if multimodal else nn.Identity()
-
-        if image_mean is None:
-            image_mean = [0.485, 0.456, 0.406]
-        if image_std is None:
-            image_std = [0.229, 0.224, 0.225]
-        self.transform = GeneralizedRCNNTransform(
-            min(size), max(size), image_mean, image_std, size_divisible=1, fixed_size=size, **kwargs
-        )
-
         if phenotype_means is None:
             phenotype_means = [0.0, 0.0]
         if phenotype_stds is None:
@@ -76,143 +43,40 @@ class Modified_SSDLiteMobileViT(nn.Module):
         self.register_buffer("phenotype_stds", torch.Tensor(phenotype_stds).unsqueeze(0))
         self.register_buffer("phenotype_means", torch.Tensor(phenotype_means).unsqueeze(0))
 
-        self.proposal_matcher = SSDMatcher(iou_thresh)
         self.anchor_generator = DefaultBoxGenerator(aspect_ratios, min_ratio=0.1, max_ratio=1.05)
-        self.box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
 
-        # Anchor box related parameters
-        self.score_thresh = score_thresh
-        self.nms_thresh = nms_thresh
-        self.detections_per_img = detections_per_img
-        self.topk_candidates = topk_candidates
+    def forward(self, x: Tensor) -> LettuceDetectionOutputs:
+        raise NotImplementedError
 
-        self.neg_to_pos_ratio = 3
-        self.label_smoothing = 0.3
 
-        self.phenotype_loss_weight = phenotype_loss_weight
-        self.multimodal = multimodal
+class SingleBranchLettuceModel(ModifiedSSDLiteMobileViTBase):
+    def forward(self, images: Tensor) -> LettuceDetectionOutputs:
+        features = self.model.get_backbone_features(images)
 
-    # @torch.jit.unused
-    def eager_outputs(
-            self, losses: Dict[str, Tensor], detections: List[Dict[str, Tensor]]
-    ) -> Dict[str, Tensor] | List[Dict[str, Tensor]]:
-        if self.training:
-            return losses
-
-        return detections
-
-    def compute_loss(
-            self,
-            head_outputs: HeadOutputs,
-            targets: List[Dict[str, Tensor]],
-            anchors: List[Tensor],
-    ) -> Dict[str, Tensor]:
-        """
-        Computes SSD loss, similar to TorchVision's implementation.
-        Args:
-            targets (List[Dict[str, Tensor]]): Ground truth, list of dicts with "boxes" and "labels".
-                                               Optionally "phenotypes" if you have phenotype targets.
-            head_outputs (HeadOutputs): Outputs from SSD heads.
-                                             {"cls_logits": [B, N, num_classes],
-                                              "bbox_regression": [B, N, 4],
-                                              "phenotypes_pred": [B, N, num_phenotypes] (optional)}
-            anchors (Tensor): Default boxes from CVNet model, shape [B, N, 4].
-        """
-
-        matched_idxs = []
-        for anchors_per_image, targets_per_image in zip(anchors, targets):
-            if targets_per_image["boxes"].numel() == 0:
-                matched_idxs.append(
-                    torch.full(
-                        (anchors_per_image.size(0),), -1, dtype=torch.int64, device=anchors_per_image.device
-                    )
-                )
-                continue
-
-            match_quality_matrix = box_ops.box_iou(targets_per_image["boxes"], anchors_per_image)
-            matched_idxs.append(self.proposal_matcher(match_quality_matrix))
-
-        bbox_regression = head_outputs.bbox_regression
-        cls_logits = head_outputs.cls_logits
-        phenotypes_pred = head_outputs.phenotypes_pred
-
-        model_outputs_phenotypes = phenotypes_pred.shape[-1] > 0
-
-        # Match original targets with default boxes
-        num_foreground = 0
-        bbox_loss = []
-        cls_targets = []
-        phenotype_loss = []
-        for (
-                targets_per_image,
-                bbox_regression_per_image,
-                cls_logits_per_image,
-                phenotypes_pred_per_image,
-                anchors_per_image,
-                matched_idxs_per_image,
-        ) in zip(targets, bbox_regression, cls_logits, phenotypes_pred, anchors, matched_idxs):
-            # produce the matching between boxes and targets
-            foreground_idxs_per_image = torch.where(matched_idxs_per_image >= 0)[0]
-            foreground_matched_idxs_per_image = matched_idxs_per_image[foreground_idxs_per_image]
-            num_foreground += foreground_matched_idxs_per_image.numel()
-
-            # Calculate regression loss
-            matched_gt_boxes_per_image = targets_per_image["boxes"][foreground_matched_idxs_per_image]
-            bbox_regression_per_image = bbox_regression_per_image[foreground_idxs_per_image, :]
-            anchors_per_image = anchors_per_image[foreground_idxs_per_image, :]
-            target_regression = self.box_coder.encode_single(matched_gt_boxes_per_image, anchors_per_image)
-            bbox_loss.append(
-                torch.nn.functional.smooth_l1_loss(bbox_regression_per_image, target_regression, reduction="sum")
-            )
-
-            # Estimate ground truth for class targets
-            gt_classes_target = torch.zeros(
-                (cls_logits_per_image.size(0),),
-                dtype=targets_per_image["labels"].dtype,
-                device=targets_per_image["labels"].device,
-            )
-            gt_classes_target[foreground_idxs_per_image] = targets_per_image["labels"][
-                foreground_matched_idxs_per_image
-            ]
-            cls_targets.append(gt_classes_target)
-
-            # Calculate phenotype loss (only for foreground objects)
-            if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0 and model_outputs_phenotypes:
-                matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
-                pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
-                phenotype_loss_per_image = torch.nn.functional.mse_loss(
-                    pred_phenotypes, matched_phenotypes, reduction="sum"
-                )
-                phenotype_loss.append(phenotype_loss_per_image)
-            else:
-                phenotype_loss.append(torch.tensor(0.0, device=bbox_regression.device))
-
-        bbox_loss = torch.stack(bbox_loss)
-        cls_targets = torch.stack(cls_targets)
-        phenotype_loss = torch.stack(phenotype_loss)
-
-        # Calculate classification loss
-        num_classes = cls_logits.size(-1)
-        cls_loss = F.cross_entropy(cls_logits.view(-1, num_classes), cls_targets.view(-1), reduction="none").view(
-            cls_targets.size()
+        cls_logits, bbox_regression, _, phenotypes_pred = self.model.ssd_forward(
+            features, device=images.device
         )
 
-        # Hard Negative Sampling
-        foreground_idxs = cls_targets > 0
-        num_negative = self.neg_to_pos_ratio * foreground_idxs.sum(1, keepdim=True)
-        # num_negative[num_negative < self.neg_to_pos_ratio] = self.neg_to_pos_ratio
-        negative_loss = cls_loss.clone()
-        negative_loss[foreground_idxs] = -float("inf")  # use -inf to detect positive values that creeped in the sample
-        values, idx = negative_loss.sort(1, descending=True)
-        # background_idxs = torch.logical_and(idx.sort(1)[1] < num_negative, torch.isfinite(values))
-        background_idxs = idx.sort(1)[1] < num_negative
+        anchors = self.anchor_generator(images, list(features.values()))
 
-        N = max(1, num_foreground)
-        return {
-            "bbox_loss": bbox_loss.sum() / N,
-            "cls_loss": (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N,
-            "phenotype_loss": (phenotype_loss.sum() / N) * self.phenotype_loss_weight,
-        }
+        head_outputs = LettuceDetectionOutputs(
+            cls_logits=cls_logits,
+            bbox_regression=bbox_regression,
+            phenotypes_pred=phenotypes_pred,
+            anchors=anchors
+        )
+
+        return head_outputs
+
+
+class DualBranchLettuceModel(ModifiedSSDLiteMobileViTBase):
+    def __init__(self, aspect_ratios: List[List[int]], **kwargs):
+        super().__init__(aspect_ratios, **kwargs)
+        self.aux_encoder = copy.deepcopy(self.model.encoder)
+
+        self.aff_0 = AFF(self.model.enc_l3_channels)
+        self.aff_1 = AFF(self.model.enc_l4_channels)
+        self.aff_2 = AFF(self.model.enc_l5_channels)
 
     def get_backbone_features(self, x_main: Tensor, x_aux: Tensor) -> Dict[str, Tensor]:
         aux_enc_features = self.aux_encoder.extract_end_points_all(x_aux)
@@ -243,153 +107,25 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         return end_points
 
-    def forward(
-            self, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
-    ) -> (
-            Tuple[Dict[str, Tensor],
-            List[Dict[str, Tensor]]] |
-            Dict[str, Tensor] |
-            List[Dict[str, Tensor]]
-    ):
-        """
-        Returns:
-            A (Losses, Detections) tuple if in scripting, otherwise `Losses` if in training mode and `Detections`
-            if not in training mode
-        """
+    def forward(self, images: Tensor) -> LettuceDetectionOutputs:
+        x, y = images.unbind()
 
-        if self.training:
-            if targets is None:
-                torch._assert(False, "targets should not be none when in training mode")
-            else:
-                for target in targets:
-                    boxes = target["boxes"]
-                    if isinstance(boxes, torch.Tensor):
-                        torch._assert(
-                            len(boxes.shape) == 2 and boxes.shape[-1] == 4,
-                            f"Expected target boxes to be a tensor of shape [N, 4], got {boxes.shape}.",
-                        )
-                    else:
-                        torch._assert(False, f"Expected target boxes to be of type Tensor, got {type(boxes)}.")
-
-        # get the original image sizes
-        original_image_sizes: List[Tuple[int, int]] = []
-        for img in images:
-            val = img.shape[-2:]
-            torch._assert(
-                len(val) == 2,
-                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
-            )
-            original_image_sizes.append((val[0], val[1]))
-
-        image_tensors: List[Tensor] = [item.x if isinstance(item, DualTensor) else item for item in images]
-        images_transformed, targets_transformed = self.transform(image_tensors, targets)
-
-        # Check for degenerate boxes
-        if targets_transformed is not None:
-            for target_idx, target in enumerate(targets_transformed):
-                boxes = target["boxes"]
-                degenerate_boxes = boxes[:, 2:] <= boxes[:, :2]
-                if degenerate_boxes.any():
-                    bb_idx = torch.where(degenerate_boxes.any(dim=1))[0][0]
-                    degen_bb: List[float] = boxes[bb_idx].tolist()
-                    torch._assert(
-                        False,
-                        "All bounding boxes should have positive height and width."
-                        f" Found invalid box {degen_bb} for target at index {target_idx}.",
-                    )
-
-        if self.multimodal:
-            aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
-            aux_images_transformed, _ = self.transform(aux_tensors)
-            features = self.get_backbone_features(images_transformed.tensors, aux_images_transformed.tensors)
-        else:
-            features = self.model.get_backbone_features(images_transformed.tensors)
+        features = self.get_backbone_features(x, y)
 
         cls_logits, bbox_regression, _, phenotypes_pred = self.model.ssd_forward(
-            features, device=images_transformed.tensors.device
+            features, device=x.device
         )
 
-        head_outputs = HeadOutputs(
+        anchors = self.anchor_generator(images, list(features.values()))
+
+        head_outputs = LettuceDetectionOutputs(
             cls_logits=cls_logits,
             bbox_regression=bbox_regression,
-            phenotypes_pred=phenotypes_pred
+            phenotypes_pred=phenotypes_pred,
+            anchors=anchors
         )
 
-        # create the set of anchors
-        anchors = self.anchor_generator(images_transformed, list(features.values()))
-
-        losses = {}
-        detections: List[Dict[str, Tensor]] = []
-        if self.training:
-            if targets_transformed is None:
-                torch._assert(False, "targets should not be none when in training mode")
-            else:
-                losses = self.compute_loss(head_outputs, targets_transformed, anchors)
-        else:
-            detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
-            detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
-            # returns a list of detections
-
-        return self.eager_outputs(losses, detections)
-
-    def postprocess_detections(
-            self, head_outputs: HeadOutputs, image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
-    ) -> List[Dict[str, Tensor]]:
-        bbox_regression = head_outputs.bbox_regression
-        pred_scores = F.softmax(head_outputs.cls_logits, dim=-1)
-        phenotypes_pred = head_outputs.phenotypes_pred
-
-        num_classes = pred_scores.size(-1)
-        device = pred_scores.device
-
-        detections: List[Dict[str, Tensor]] = []
-
-        for boxes, scores, phenotypes, anchors, image_shape in zip(bbox_regression, pred_scores, phenotypes_pred,
-                                                                   image_anchors, image_shapes):
-            boxes = self.box_coder.decode_single(boxes, anchors)
-            boxes = box_ops.clip_boxes_to_image(boxes, image_shape)
-
-            image_boxes = []
-            image_scores = []
-            image_labels = []
-            image_phenotypes = []
-            for label in range(1, num_classes):
-                score = scores[:, label]
-
-                keep_idxs = score > self.score_thresh
-                score = score[keep_idxs]
-                box = boxes[keep_idxs]
-                phenotype = phenotypes[keep_idxs]
-
-                # keep only topk scoring predictions
-                num_topk = _topk_min(score, self.topk_candidates, 0)
-                score, idxs = score.topk(num_topk)
-                box = box[idxs]
-                phenotype = (phenotype[idxs] * self.phenotype_stds) + self.phenotype_means # denormalize
-
-                image_boxes.append(box)
-                image_scores.append(score)
-                image_labels.append(torch.full_like(score, fill_value=label, dtype=torch.int64, device=device))
-                image_phenotypes.append(phenotype)
-
-            image_boxes = torch.cat(image_boxes, dim=0)
-            image_scores = torch.cat(image_scores, dim=0)
-            image_labels = torch.cat(image_labels, dim=0)
-            image_phenotypes = torch.cat(image_phenotypes, dim=0)
-
-            # non-maximum suppression
-            keep = box_ops.batched_nms(image_boxes, image_scores, image_labels, self.nms_thresh)
-            keep = keep[: self.detections_per_img]
-
-            detections.append(
-                {
-                    "boxes": image_boxes[keep],
-                    "scores": image_scores[keep],
-                    "labels": image_labels[keep],
-                    "phenotypes": image_phenotypes[keep]
-                }
-            )
-        return detections
+        return head_outputs
 
 
 def mobilenet_branch():
@@ -426,13 +162,13 @@ class PhenotypeRegressor(nn.Module):
         self.dual_branch = dual_branch
 
 
-    def forward(self, input: DualTensor) -> Tensor:
+    def forward(self, input: DualTensor | Tensor) -> Tensor:
         # transform the input
-        x = self.transform(input.x)
+        x = self.transform(input.x if isinstance(input, DualTensor) else input)
 
         features = self.X(x)
 
-        if self.dual_branch:
+        if self.dual_branch and isinstance(input, DualTensor):
             y_transformed = self.transform(input.y)
             y_features = self.Y(y_transformed)  # Should output [B, 576]
             features = torch.cat((features, y_features), dim=1)  # Concatenate [B, 576] and [B, 576]

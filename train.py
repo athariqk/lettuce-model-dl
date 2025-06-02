@@ -1,20 +1,18 @@
 import datetime
 import os
 import time
-from copy import copy
 
 import numpy as np
 import torch
 import torchvision
 import torchvision.ops._utils
 from sklearn.model_selection import KFold
-from sklearn.preprocessing import StandardScaler
 
 import custom_types
 from coco_eval import CocoEvaluator
 from coco_utils import get_coco, get_coco_kp, get_coco_online
 from dataset import get_lettuce_data, get_lettuce_data_no_h
-from engine import evaluate, train_one_epoch
+from engine import LettuceDetectorTrainer
 from group_by_aspect_ratio import GroupedBatchSampler, create_aspect_ratio_groups
 from torchvision.transforms import InterpolationMode
 from neural_networks.utils import get_model
@@ -262,8 +260,6 @@ def k_fold_training(args, num_classes, full_dataset, device):
                 kwargs["rpn_score_thresh"] = args.rpn_score_thresh
         kwargs["device"] = device
          # do the same for standard_training
-        if args.phenotype_loss_weight:
-            kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
         if args.phenotype_means:
             kwargs["phenotype_means"] = args.phenotype_means
         if args.phenotype_stds:
@@ -286,11 +282,6 @@ def k_fold_training(args, num_classes, full_dataset, device):
         if args.distributed:
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
             model_without_ddp = model.module
-
-        if args.test_only:
-            torch.backends.cudnn.deterministic = True
-            evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
-            continue
 
         if args.norm_weight_decay is None:
             parameters = [p for p in model.parameters() if p.requires_grad]
@@ -326,12 +317,32 @@ def k_fold_training(args, num_classes, full_dataset, device):
                 f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
             )
 
+        trainer = LettuceDetectorTrainer(
+            model=model,
+            optimizer=optimizer,
+            data_loader=data_loader_train,
+            epoch=args.epochs,
+            scaler=scaler,
+            phenotype_names=args.phenotype_names,
+            size=(320, 320),
+            iou_thresh=0.5,
+            phenotype_loss_weight=args.phenotype_loss_weight,
+            image_mean=[0.0, 0.0, 0.0],
+            image_std=[1.0, 1.0, 1.0],
+            **kwargs,
+        )
+
+        if args.test_only:
+            torch.backends.cudnn.deterministic = True
+            trainer.evaluate(device=device)
+            continue
+
         print(f"Start training for Fold {fold + 1}")
         start_time = time.time()
         for epoch in range(args.start_epoch, args.epochs):
             if args.distributed:
                 train_sampler.set_epoch(epoch)
-            train_one_epoch(model, optimizer, data_loader_train, device, epoch, args.print_freq, scaler)
+            trainer.train_one_epoch(device, args.print_freq)
             lr_scheduler.step()
             if current_fold_output_dir:
                 checkpoint = {
@@ -348,7 +359,7 @@ def k_fold_training(args, num_classes, full_dataset, device):
                 utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
 
             # evaluate after every epoch
-            evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
+            evaluator: CocoEvaluator = trainer.evaluate(device=device)
 
             if evaluator and evaluator.iou_types and evaluator.phenotype_metrics_results:
                 first_iou_type = evaluator.iou_types[0]  # Typically "bbox"
@@ -572,9 +583,23 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
         if scaler:
             scaler.load_state_dict(checkpoint["scaler"])
 
+    trainer = LettuceDetectorTrainer(
+        model=model,
+        optimizer=optimizer,
+        data_loader=data_loader,
+        epoch=args.epochs,
+        scaler=scaler,
+        phenotype_names=args.phenotype_names,
+        size=(320, 320),
+        iou_thresh=0.5,
+        phenotype_loss_weight=args.phenotype_loss_weight,
+        image_mean=[0.0, 0.0, 0.0],
+        image_std=[1.0, 1.0, 1.0],
+    )
+
     if args.test_only:
         torch.backends.cudnn.deterministic = True
-        evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
+        trainer.evaluate(device=device)
         return
 
     print("Starting standard training (K-Fold is disabled or k_folds <= 1).")
@@ -582,7 +607,7 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        train_one_epoch(model, optimizer, data_loader, device, epoch, args.print_freq, scaler)
+        trainer.train_one_epoch(device, args.print_freq)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint = {
@@ -598,7 +623,7 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
 
         # evaluate after every epoch
-        evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
+        trainer.evaluate(device=device)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

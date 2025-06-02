@@ -1,46 +1,122 @@
 import os
-from functools import partial
+from typing import Any, Optional, List, Tuple
+
 import torch
-import torch.nn as nn
-from typing import Any, Callable, Optional
+from torch import nn, Tensor
+from torchvision.models.detection._utils import BoxCoder
+from torchvision.models.detection.transform import GeneralizedRCNNTransform
 
-from torchvision.models.detection.backbone_utils import _validate_trainable_layers
-from torchvision.models.detection.ssd import SSD
-from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
+from .utils import retrieve_out_channels, postprocess_lettuce_detections
 
-from .utils import retrieve_out_channels
-
-from .model import Modified_SSDLiteMobileViT, PhenotypeRegressor
+from .model import PhenotypeRegressor, SingleBranchLettuceModel, DualBranchLettuceModel
 from .backbone import MobileViTV2FeatureExtractor
 from .head import ModifiedSSDLiteHead
 
 from my_utils import ROOT_DIR
 
 __all__ = [
+    "LettuceModelEval",
     "lettuce_model",
     "lettuce_model_multimodal",
     "lettuce_regressor_model",
 ]
 
 
+class LettuceModelEval(nn.Module):
+    def __init__(
+            self,
+            size,
+            aspect_ratios: List[List[int]],
+            image_mean: Optional[List[float]] = None,
+            image_std: Optional[List[float]] = None,
+            phenotype_means: Optional[List[float]] = None,
+            phenotype_stds: Optional[List[float]] = None,
+            pretrained: str = None,
+            multimodal=False,
+            **kwargs
+    ):
+        super().__init__()
+        if multimodal:
+            self.model = SingleBranchLettuceModel(
+                size=size,
+                aspect_ratios=aspect_ratios,
+                phenotype_means=phenotype_means,
+                phenotype_stds=phenotype_stds,
+                image_mean=image_mean,
+                image_std=image_std,
+                pretrained=pretrained,
+                **kwargs
+            )
+        else:
+            self.model = DualBranchLettuceModel(
+                size=size,
+                aspect_ratios=aspect_ratios,
+                phenotype_means=phenotype_means,
+                phenotype_stds=phenotype_stds,
+                image_mean=image_mean,
+                image_std=image_std,
+                pretrained=pretrained,
+                **kwargs
+            )
+
+        self.model.eval()
+
+        if image_mean is None:
+            image_mean = [0.485, 0.456, 0.406]
+        if image_std is None:
+            image_std = [0.229, 0.224, 0.225]
+        self.transform = GeneralizedRCNNTransform(
+            min(size), max(size), image_mean, image_std, size_divisible=1, fixed_size=size, **kwargs
+        )
+
+        self.box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
+
+    def forward(self, images: Tensor, targets: Optional):
+        # get the original image sizes
+        original_image_sizes: List[Tuple[int, int]] = []
+        for img in images:
+            val = img.shape[-2:]
+            torch._assert(
+                len(val) == 2,
+                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
+            )
+            original_image_sizes.append((val[0], val[1]))
+
+        images, targets = self.transform(images, targets)
+        output = self.model(images.tensors)
+
+        outputs = postprocess_lettuce_detections(
+            output,
+            images.image_sizes,
+            self.box_coder,
+            0.01,
+            self.model.phenotype_stds,
+            self.model.phenotype_means,
+            400,
+            200,
+            0.5
+        )
+        outputs = self.transform.postprocess(outputs, images.image_sizes, original_image_sizes)
+
+        return outputs
+
+
 def lettuce_model(
         trainable_backbone_layers: Optional[int] = None,
-        multimodal=False,
         with_height=True,
         **kwargs: Any
-) -> Modified_SSDLiteMobileViT:
+) -> SingleBranchLettuceModel:
     """Loads a model for lettuce growth phenotype estimation"""
 
-    variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt" if with_height else\
+    variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained_coremlcompat.pt" if with_height else \
         "models/coco-ssd-mobilevitv2-0.75_2nc_1pheno_pretrained.pt"
 
-    model = Modified_SSDLiteMobileViT(
+    model = SingleBranchLettuceModel(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
         image_mean=[0.0, 0.0, 0.0],
         image_std=[1.0, 1.0, 1.0],
         pretrained=os.path.join(ROOT_DIR, variant),
-        multimodal=multimodal,
         **kwargs
     )
 
@@ -56,16 +132,34 @@ def lettuce_model(
 def lettuce_model_multimodal(
         trainable_backbone_layers: Optional[int] = None,
         **kwargs: Any
-) -> Modified_SSDLiteMobileViT:
+) -> DualBranchLettuceModel:
     """Loads a multimodal model for lettuce growth phenotype estimation"""
-    return lettuce_model(trainable_backbone_layers=trainable_backbone_layers, multimodal=True, **kwargs)
+
+    variant = "coco-ssd-mobilevitv2-0.75_2nc_pretrained_coremlcompat.pt"
+
+    model = DualBranchLettuceModel(
+        size=(320, 320),
+        aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
+        image_mean=[0.0, 0.0, 0.0],
+        image_std=[1.0, 1.0, 1.0],
+        pretrained=os.path.join(ROOT_DIR, variant),
+        **kwargs
+    )
+
+    if trainable_backbone_layers is not None:
+        for parameter in model.model.encoder.parameters():
+            parameter.requires_grad_(trainable_backbone_layers >= 2)
+        for parameter in model.model.extra_layers.parameters():
+            parameter.requires_grad_(trainable_backbone_layers >= 1)
+
+    return model
 
 
 def baseline_model(
         variant: str,
         trainable_backbone_layers: Optional[int] = None,
         **kwargs: Any
-) -> Modified_SSDLiteMobileViT:
+) -> SingleBranchLettuceModel:
     if "80" in variant:
         variant = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_81nc_pretrained.pt")
     elif "90" in variant:
@@ -75,7 +169,7 @@ def baseline_model(
     else:
         raise ValueError(f"Unexpected variant, got: {variant}")
 
-    model = Modified_SSDLiteMobileViT(
+    model = SingleBranchLettuceModel(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
         image_mean=[0.0, 0.0, 0.0],

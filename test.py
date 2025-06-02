@@ -16,7 +16,8 @@ from torchvision.transforms import functional as F_vision
 from torch.nn import functional as F
 from torch import nn
 
-from neural_networks import lettuce_model
+from neural_networks import lettuce_model, LettuceModelEval
+
 
 def get_arguments():
     parser = argparse.ArgumentParser(description="SSDLite-MobileViT Inference")
@@ -28,6 +29,7 @@ def get_arguments():
     parser.add_argument("--conf-threshold", type=float, default=0.5, help="Confidence threshold")
     parser.add_argument("--lettuce-model", action="store_true")
     return parser.parse_args()
+
 
 coco_names = [
     "background",
@@ -118,6 +120,7 @@ lettuce_names = [
     "lettuce"
 ]
 
+
 class Colormap(object):
     """
     Generate colormap for visualizing segmentation masks or bounding boxes.
@@ -171,18 +174,19 @@ class Colormap(object):
         cmap = np.asarray(cmap).flatten()
         return list(cmap)
 
+
 def draw_bounding_boxes(
-    image: np.ndarray,
-    boxes: np.ndarray,
-    labels: np.ndarray,
-    scores: np.ndarray,
-    phenotypes: np.ndarray,
-    color_map: Optional = None, # type: ignore
-    object_names: Optional[List] = None,
-    is_bgr_format: Optional[bool] = False,
-    save_path: Optional[str] = None,
-    num_classes: Optional[int] = 81,
-    conf_score_threshold = 0.5,
+        image: np.ndarray,
+        boxes: np.ndarray,
+        labels: np.ndarray,
+        scores: np.ndarray,
+        phenotypes: np.ndarray,
+        color_map: Optional = None,  # type: ignore
+        object_names: Optional[List] = None,
+        is_bgr_format: Optional[bool] = False,
+        save_path: Optional[str] = None,
+        num_classes: Optional[int] = 81,
+        conf_score_threshold=0.5,
 ) -> None:
     FONT_SIZE = cv2.FONT_HERSHEY_PLAIN
     LABEL_COLOR = [255, 255, 255]
@@ -207,7 +211,7 @@ def draw_bounding_boxes(
         r, g, b = color_map[label]
         c1 = (coords[0], coords[1])
         c2 = (coords[2], coords[3])
-        
+
         fw, h = pheno
 
         cv2.rectangle(image, c1, c2, (r, g, b), thickness=RECT_BORDER_THICKNESS)
@@ -236,6 +240,7 @@ def draw_bounding_boxes(
             print("Failed to store detection results")
     return image
 
+
 def to_numpy(img_tensor: torch.Tensor) -> np.ndarray:
     # [0, 1] --> [0, 255]
     img_tensor = torch.mul(img_tensor, 255.0)
@@ -245,18 +250,19 @@ def to_numpy(img_tensor: torch.Tensor) -> np.ndarray:
     img_np = img_tensor.byte().cpu().numpy()
     return img_np
 
+
 def predict_and_save(
-    input_tensor: torch.Tensor,
-    model: nn.Module,
-    input_np: Optional[np.ndarray] = None,
-    device: Optional = torch.device("cpu"), # type: ignore
-    is_coco_evaluation: Optional[bool] = False,
-    file_name: Optional[str] = None,
-    output_stride: Optional[int] = 32,
-    orig_h: Optional[int] = None,
-    orig_w: Optional[int] = None,
-    *args,
-    **kwargs
+        input_tensor: torch.Tensor,
+        model: nn.Module,
+        input_np: Optional[np.ndarray] = None,
+        device: Optional = torch.device("cpu"),  # type: ignore
+        is_coco_evaluation: Optional[bool] = False,
+        file_name: Optional[str] = None,
+        output_stride: Optional[int] = 32,
+        orig_h: Optional[int] = None,
+        orig_w: Optional[int] = None,
+        *args,
+        **kwargs
 ):
     if input_np is None and not is_coco_evaluation:
         input_np = to_numpy(input_tensor).squeeze(  # convert to numpy
@@ -328,6 +334,7 @@ def predict_and_save(
         save_path=detection_res_file_name,
     )
 
+
 def read_and_process_image(image_fname: str, *args, **kwargs):
     input_img = Image.open(image_fname).convert("RGB")
     input_np = np.array(input_img)
@@ -343,6 +350,7 @@ def read_and_process_image(image_fname: str, *args, **kwargs):
     input_tensor = F_vision.pil_to_tensor(input_img)
     input_tensor = input_tensor.float().div(255.0).unsqueeze(0)
     return input_tensor, input_np, orig_h, orig_w
+
 
 def predict_image(image_fname, **kwargs):
     if not os.path.isfile(image_fname):
@@ -370,6 +378,7 @@ def predict_image(image_fname, **kwargs):
             orig_h=orig_h,
             orig_w=orig_w,
         )
+
 
 def predict_image_2(model, device, image_path):
     image = Image.open(image_path).convert('RGB')
@@ -428,13 +437,17 @@ def predict_image_2(model, device, image_path):
     plt.axis('off')
     plt.show()
 
+
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # model = ssdlite320_mobilenet_v3_large(weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT)
     # checkpoint = torch.load("model_95.pth", map_location=torch.device('cpu'), weights_only=False)
     # model.load_state_dict(checkpoint["model"])
-    model = lettuce_model()
+    model = LettuceModelEval(size=(320, 320),
+                             aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
+                             image_mean=[0.0, 0.0, 0.0],
+                             image_std=[1.0, 1.0, 1.0])
     weights = torch.load(args.weights, map_location="cpu", weights_only=False)["model"]
     model.load_state_dict(weights)
     model.to(device)
@@ -447,8 +460,10 @@ def main(args):
     else:
         predict_image_2(model, device, args.image_path)
 
+
 def main2(args):
     predict_image(args.image_path)
+
 
 if __name__ == "__main__":
     args = get_arguments()
