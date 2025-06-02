@@ -67,7 +67,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             phenotype_means = [0.0, 0.0]
         if phenotype_stds is None:
             phenotype_stds = [1.0, 1.0]
-        device = kwargs["device"]
+        device = kwargs["device"] if "device" in kwargs else "cpu"
         self.phenotype_means = torch.Tensor(phenotype_means).unsqueeze(0).to(device)
         self.phenotype_stds = torch.Tensor(phenotype_stds).unsqueeze(0).to(device)
 
