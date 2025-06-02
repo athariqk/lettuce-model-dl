@@ -11,13 +11,19 @@ from torchvision.models.detection._utils import BoxCoder, _topk_min
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 from torchvision.ops import boxes as box_ops
 from torchvision.models.detection._utils import SSDMatcher
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Sequence, NamedTuple
 from cvnets.models.detection.ssd import SingleShotMaskDetector
 import torchvision.transforms.v2 as transforms
 
 from my_utils import ROOT_DIR
 from neural_networks.blocks import AFF
 from custom_types import DualTensor
+
+
+class HeadOutputs(NamedTuple):
+    cls_logits: torch.Tensor      # Expected shape: [B, N, NumClasses]
+    bbox_regression: torch.Tensor # Expected shape: [B, N, 4]
+    phenotypes_pred: torch.Tensor # Expected shape: [B, N, NumPhenotypes]
 
 
 class Modified_SSDLiteMobileViT(nn.Module):
@@ -67,9 +73,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
             phenotype_means = [0.0, 0.0]
         if phenotype_stds is None:
             phenotype_stds = [1.0, 1.0]
-        device = kwargs["device"] if "device" in kwargs else "cpu"
-        self.phenotype_means = torch.Tensor(phenotype_means).unsqueeze(0).to(device)
-        self.phenotype_stds = torch.Tensor(phenotype_stds).unsqueeze(0).to(device)
+        self.register_buffer("phenotype_stds", torch.Tensor(phenotype_stds).unsqueeze(0))
+        self.register_buffer("phenotype_means", torch.Tensor(phenotype_means).unsqueeze(0))
 
         self.proposal_matcher = SSDMatcher(iou_thresh)
         self.anchor_generator = DefaultBoxGenerator(aspect_ratios, min_ratio=0.1, max_ratio=1.05)
@@ -87,7 +92,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         self.phenotype_loss_weight = phenotype_loss_weight
         self.multimodal = multimodal
 
-    @torch.jit.unused
+    # @torch.jit.unused
     def eager_outputs(
             self, losses: Dict[str, Tensor], detections: List[Dict[str, Tensor]]
     ) -> Dict[str, Tensor] | List[Dict[str, Tensor]]:
@@ -98,7 +103,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
     def compute_loss(
             self,
-            head_outputs: Dict[str, Tensor],
+            head_outputs: HeadOutputs,
             targets: List[Dict[str, Tensor]],
             anchors: List[Tensor],
     ) -> Dict[str, Tensor]:
@@ -107,7 +112,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         Args:
             targets (List[Dict[str, Tensor]]): Ground truth, list of dicts with "boxes" and "labels".
                                                Optionally "phenotypes" if you have phenotype targets.
-            head_outputs (Dict[str, Tensor]): Outputs from SSD heads.
+            head_outputs (HeadOutputs): Outputs from SSD heads.
                                              {"cls_logits": [B, N, num_classes],
                                               "bbox_regression": [B, N, 4],
                                               "phenotypes_pred": [B, N, num_phenotypes] (optional)}
@@ -127,9 +132,9 @@ class Modified_SSDLiteMobileViT(nn.Module):
             match_quality_matrix = box_ops.box_iou(targets_per_image["boxes"], anchors_per_image)
             matched_idxs.append(self.proposal_matcher(match_quality_matrix))
 
-        bbox_regression = head_outputs["bbox_regression"]
-        cls_logits = head_outputs["cls_logits"]
-        phenotypes_pred = head_outputs["phenotypes_pred"]
+        bbox_regression = head_outputs.bbox_regression
+        cls_logits = head_outputs.cls_logits
+        phenotypes_pred = head_outputs.phenotypes_pred
 
         model_outputs_phenotypes = phenotypes_pred.shape[-1] > 0
 
@@ -238,13 +243,125 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         return end_points
 
+    def convert_detections_to_keyed_tensors(
+            detections_list: List[Dict[str, Tensor]],
+            key_order: Sequence[str]
+    ) -> List[Tensor]:
+        """
+        Converts a list of detection dictionaries into a list of tensors.
+        Each output tensor "acts like a dictionary," where its first dimension
+        indexes the data corresponding to the keys in `key_order`.
+
+        Args:
+            detections_list: A list of dictionaries, where each dictionary maps
+                             string keys to PyTorch Tensors. All tensors in a
+                             single dictionary corresponding to `key_order` keys
+                             are expected to have the same size in their first
+                             dimension (e.g., number of detected objects).
+            key_order: A sequence of string keys defining the order for the
+                       first dimension of the output tensors. The i-th slice
+                       along the first dimension of an output tensor will correspond
+                       to the i-th key in `key_order`.
+
+        Returns:
+            A list of Tensors. Each tensor has shape (len(key_order), N, C_max),
+            where N is the number of items (e.g., detections) for that entry,
+            and C_max is the maximum size of the last dimension among the tensors
+            processed for that entry from `key_order` (after unsqueezing 1D tensors).
+            Tensors are padded with zeros if their last dimension is smaller than C_max
+            or if a key from `key_order` is missing in the input dictionary.
+        """
+        output_tensors: List[Tensor] = []
+
+        if not key_order:
+            # If key_order is empty, every dictionary would result in a tensor of shape (0, N, C_max).
+            # We'll return an empty list as it's ambiguous what to do without keys.
+            return []
+
+        for det_dict in detections_list:
+            num_instances = -1  # Number of items (e.g., detections) for this dictionary entry
+            max_cols_for_this_dict = 1  # Max number of columns for this dictionary's tensors (min 1)
+
+            relevant_tensors_in_dict: Dict[str, Tensor] = {}  # Store tensors from key_order found in current dict
+
+            # Pass 1: Determine num_instances and max_cols_for_this_dict from relevant tensors
+            initial_N_set = False
+            for key in key_order:
+                if key in det_dict:
+                    tensor = det_dict[key]
+                    if tensor is None or tensor.ndim == 0:  # Skip None or scalar tensors
+                        continue
+
+                    relevant_tensors_in_dict[key] = tensor
+
+                    if not initial_N_set:
+                        num_instances = tensor.size(0)
+                        initial_N_set = True
+                    elif tensor.size(0) != num_instances:
+                        print(f"⚠️ Warning: Inconsistent number of instances for key '{key}' "
+                              f"(got {tensor.size(0)}, expected {num_instances}). "
+                              f"Skipping this dictionary entry.")
+                        num_instances = -2  # Mark as invalid for skipping
+                        break
+
+                    current_tensor_cols = tensor.size(-1) if tensor.ndim > 1 else 1
+                    max_cols_for_this_dict = max(max_cols_for_this_dict, current_tensor_cols)
+
+            if num_instances == -2:  # Skip dict if inconsistent N was found
+                continue
+
+            if not initial_N_set:  # No relevant tensors found, or all were empty/scalar. Treat as 0 instances.
+                num_instances = 0
+
+            # Pass 2: Prepare each tensor slice for stacking
+            prepared_slices: List[Tensor] = []
+
+            ref_dtype = torch.float32
+            ref_device = torch.device('cpu')
+            if relevant_tensors_in_dict:  # Get dtype/device from first available relevant tensor
+                first_relevant_tensor = next(iter(relevant_tensors_in_dict.values()))
+                ref_dtype = first_relevant_tensor.dtype
+                ref_device = first_relevant_tensor.device
+
+            for key in key_order:
+                if key in relevant_tensors_in_dict:
+                    tensor = relevant_tensors_in_dict[key]
+
+                    current_slice = tensor
+                    if tensor.ndim == 1:  # Unsqueeze 1D tensors like scores/labels to (N, 1)
+                        current_slice = tensor.unsqueeze(1)
+
+                    # Pad the last dimension if necessary
+                    cols_to_pad = max_cols_for_this_dict - current_slice.size(-1)
+                    if cols_to_pad > 0:
+                        padding_shape = list(current_slice.shape[:-1]) + [cols_to_pad]
+                        padding = torch.zeros(padding_shape, dtype=current_slice.dtype, device=current_slice.device)
+                        current_slice = torch.cat([current_slice, padding], dim=-1)
+                    elif cols_to_pad < 0:  # Should not happen due to max_cols_for_this_dict calculation
+                        raise AssertionError(f"Internal logic error: cols_to_pad is negative for key '{key}'.")
+
+                    prepared_slices.append(current_slice)
+                else:
+                    # Key not in det_dict or was None/scalar: create a placeholder tensor
+                    placeholder = torch.zeros(num_instances, max_cols_for_this_dict,
+                                              dtype=ref_dtype, device=ref_device)
+                    prepared_slices.append(placeholder)
+
+            # Stack the prepared slices if key_order was defined
+            if prepared_slices:
+                stacked_tensor = torch.stack(prepared_slices, dim=0)
+                output_tensors.append(stacked_tensor)
+
+        return output_tensors
+
     def forward(
             self, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
     ) -> (
             Tuple[Dict[str, Tensor],
             List[Dict[str, Tensor]]] |
             Dict[str, Tensor] |
-            List[Dict[str, Tensor]]
+            List[Dict[str, Tensor]] |
+            HeadOutputs
     ):
         """
         Returns:
@@ -304,11 +421,11 @@ class Modified_SSDLiteMobileViT(nn.Module):
             features, device=images_transformed.tensors.device
         )
 
-        head_outputs = {
-            "cls_logits": cls_logits,  # [B, N, NumClasses]
-            "bbox_regression": bbox_regression,  # [B, N, 4]
-            "phenotypes_pred": phenotypes_pred  # [B, N, NumPhenotypes]
-        }
+        head_outputs = HeadOutputs(
+            cls_logits=cls_logits,
+            bbox_regression=bbox_regression,
+            phenotypes_pred=phenotypes_pred
+        )
 
         # create the set of anchors
         anchors = self.anchor_generator(images_transformed, list(features.values()))
@@ -320,24 +437,21 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 torch._assert(False, "targets should not be none when in training mode")
             else:
                 losses = self.compute_loss(head_outputs, targets_transformed, anchors)
-        else:
+        elif torch.jit.is_scripting():
             detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
             detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
-
-        if torch.jit.is_scripting():  # type: ignore
-            if not self._has_warned:
-                warnings.warn("SSD always returns a (Losses, Detections) tuple in scripting")
-                self._has_warned = True
-            return losses, detections
+            # returns a list of detections
+        else:
+            detections = head_outputs
 
         return self.eager_outputs(losses, detections)
 
     def postprocess_detections(
-            self, head_outputs: Dict[str, Tensor], image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
+            self, head_outputs: HeadOutputs, image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
     ) -> List[Dict[str, Tensor]]:
-        bbox_regression = head_outputs["bbox_regression"]
-        pred_scores = F.softmax(head_outputs["cls_logits"], dim=-1)
-        phenotypes_pred = head_outputs["phenotypes_pred"]
+        bbox_regression = head_outputs.bbox_regression
+        pred_scores = F.softmax(head_outputs.cls_logits, dim=-1)
+        phenotypes_pred = head_outputs.phenotypes_pred
 
         num_classes = pred_scores.size(-1)
         device = pred_scores.device
