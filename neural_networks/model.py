@@ -243,125 +243,13 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         return end_points
 
-    def convert_detections_to_keyed_tensors(
-            detections_list: List[Dict[str, Tensor]],
-            key_order: Sequence[str]
-    ) -> List[Tensor]:
-        """
-        Converts a list of detection dictionaries into a list of tensors.
-        Each output tensor "acts like a dictionary," where its first dimension
-        indexes the data corresponding to the keys in `key_order`.
-
-        Args:
-            detections_list: A list of dictionaries, where each dictionary maps
-                             string keys to PyTorch Tensors. All tensors in a
-                             single dictionary corresponding to `key_order` keys
-                             are expected to have the same size in their first
-                             dimension (e.g., number of detected objects).
-            key_order: A sequence of string keys defining the order for the
-                       first dimension of the output tensors. The i-th slice
-                       along the first dimension of an output tensor will correspond
-                       to the i-th key in `key_order`.
-
-        Returns:
-            A list of Tensors. Each tensor has shape (len(key_order), N, C_max),
-            where N is the number of items (e.g., detections) for that entry,
-            and C_max is the maximum size of the last dimension among the tensors
-            processed for that entry from `key_order` (after unsqueezing 1D tensors).
-            Tensors are padded with zeros if their last dimension is smaller than C_max
-            or if a key from `key_order` is missing in the input dictionary.
-        """
-        output_tensors: List[Tensor] = []
-
-        if not key_order:
-            # If key_order is empty, every dictionary would result in a tensor of shape (0, N, C_max).
-            # We'll return an empty list as it's ambiguous what to do without keys.
-            return []
-
-        for det_dict in detections_list:
-            num_instances = -1  # Number of items (e.g., detections) for this dictionary entry
-            max_cols_for_this_dict = 1  # Max number of columns for this dictionary's tensors (min 1)
-
-            relevant_tensors_in_dict: Dict[str, Tensor] = {}  # Store tensors from key_order found in current dict
-
-            # Pass 1: Determine num_instances and max_cols_for_this_dict from relevant tensors
-            initial_N_set = False
-            for key in key_order:
-                if key in det_dict:
-                    tensor = det_dict[key]
-                    if tensor is None or tensor.ndim == 0:  # Skip None or scalar tensors
-                        continue
-
-                    relevant_tensors_in_dict[key] = tensor
-
-                    if not initial_N_set:
-                        num_instances = tensor.size(0)
-                        initial_N_set = True
-                    elif tensor.size(0) != num_instances:
-                        print(f"⚠️ Warning: Inconsistent number of instances for key '{key}' "
-                              f"(got {tensor.size(0)}, expected {num_instances}). "
-                              f"Skipping this dictionary entry.")
-                        num_instances = -2  # Mark as invalid for skipping
-                        break
-
-                    current_tensor_cols = tensor.size(-1) if tensor.ndim > 1 else 1
-                    max_cols_for_this_dict = max(max_cols_for_this_dict, current_tensor_cols)
-
-            if num_instances == -2:  # Skip dict if inconsistent N was found
-                continue
-
-            if not initial_N_set:  # No relevant tensors found, or all were empty/scalar. Treat as 0 instances.
-                num_instances = 0
-
-            # Pass 2: Prepare each tensor slice for stacking
-            prepared_slices: List[Tensor] = []
-
-            ref_dtype = torch.float32
-            ref_device = torch.device('cpu')
-            if relevant_tensors_in_dict:  # Get dtype/device from first available relevant tensor
-                first_relevant_tensor = next(iter(relevant_tensors_in_dict.values()))
-                ref_dtype = first_relevant_tensor.dtype
-                ref_device = first_relevant_tensor.device
-
-            for key in key_order:
-                if key in relevant_tensors_in_dict:
-                    tensor = relevant_tensors_in_dict[key]
-
-                    current_slice = tensor
-                    if tensor.ndim == 1:  # Unsqueeze 1D tensors like scores/labels to (N, 1)
-                        current_slice = tensor.unsqueeze(1)
-
-                    # Pad the last dimension if necessary
-                    cols_to_pad = max_cols_for_this_dict - current_slice.size(-1)
-                    if cols_to_pad > 0:
-                        padding_shape = list(current_slice.shape[:-1]) + [cols_to_pad]
-                        padding = torch.zeros(padding_shape, dtype=current_slice.dtype, device=current_slice.device)
-                        current_slice = torch.cat([current_slice, padding], dim=-1)
-                    elif cols_to_pad < 0:  # Should not happen due to max_cols_for_this_dict calculation
-                        raise AssertionError(f"Internal logic error: cols_to_pad is negative for key '{key}'.")
-
-                    prepared_slices.append(current_slice)
-                else:
-                    # Key not in det_dict or was None/scalar: create a placeholder tensor
-                    placeholder = torch.zeros(num_instances, max_cols_for_this_dict,
-                                              dtype=ref_dtype, device=ref_device)
-                    prepared_slices.append(placeholder)
-
-            # Stack the prepared slices if key_order was defined
-            if prepared_slices:
-                stacked_tensor = torch.stack(prepared_slices, dim=0)
-                output_tensors.append(stacked_tensor)
-
-        return output_tensors
-
     def forward(
             self, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None
     ) -> (
             Tuple[Dict[str, Tensor],
             List[Dict[str, Tensor]]] |
             Dict[str, Tensor] |
-            List[Dict[str, Tensor]] |
-            HeadOutputs
+            List[Dict[str, Tensor]]
     ):
         """
         Returns:
@@ -437,12 +325,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 torch._assert(False, "targets should not be none when in training mode")
             else:
                 losses = self.compute_loss(head_outputs, targets_transformed, anchors)
-        elif torch.jit.is_scripting():
+        else:
             detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
             detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
             # returns a list of detections
-        else:
-            detections = head_outputs
 
         return self.eager_outputs(losses, detections)
 
