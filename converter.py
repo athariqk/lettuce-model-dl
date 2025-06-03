@@ -50,7 +50,7 @@ def convert():
     input_tensor = torch.randint(
         low=0,
         high=255,
-        size=(1, 3, 320, 320),
+        size=(2, 1, 3, 320, 320),
         device="cpu",
     )
     input_tensor = input_tensor.float().div(255.0)

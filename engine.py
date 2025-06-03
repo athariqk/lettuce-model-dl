@@ -199,9 +199,14 @@ class LettuceDetectorTrainer(BaseTrainer):
             ]
 
             image_tensors: List[Tensor] = [item.x if isinstance(item, DualTensor) else item for item in images]
+            aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
+
             images, targets = self.transform(image_tensors, targets)
+            aux, _ = self.transform(aux_tensors)
+            stacked = torch.stack([images.tensors, aux.tensors], dim=0)
+
             with torch.amp.autocast_mode.autocast("cuda", enabled=self.scaler is not None):
-                outputs = self.model(images.tensors)
+                outputs = self.model(stacked)
                 loss_dict = self.compute_loss(outputs, targets)
                 losses = sum(loss for loss in loss_dict.values())
 
@@ -276,8 +281,11 @@ class LettuceDetectorTrainer(BaseTrainer):
                 )
                 original_image_sizes.append((val[0], val[1]))
             image_tensors: List[Tensor] = [item.x if isinstance(item, DualTensor) else item for item in images]
+            aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
             images, _ = self.transform(image_tensors)
-            outputs = self.model(images.tensors)
+            aux, _ = self.transform(aux_tensors)
+            stacked = torch.stack([images.tensors, aux.tensors], dim=0)
+            outputs = self.model(stacked)
             outputs = postprocess_lettuce_detections(
                 outputs,
                 images.image_sizes,

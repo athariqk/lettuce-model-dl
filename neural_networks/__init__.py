@@ -135,7 +135,7 @@ def lettuce_model_multimodal(
 ) -> DualBranchLettuceModel:
     """Loads a multimodal model for lettuce growth phenotype estimation"""
 
-    variant = "coco-ssd-mobilevitv2-0.75_2nc_pretrained_coremlcompat.pt"
+    variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained_coremlcompat.pt"
 
     model = DualBranchLettuceModel(
         size=(320, 320),

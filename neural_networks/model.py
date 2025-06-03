@@ -51,13 +51,16 @@ class ModifiedSSDLiteMobileViTBase(nn.Module):
 
 class SingleBranchLettuceModel(ModifiedSSDLiteMobileViTBase):
     def forward(self, images: Tensor) -> LettuceDetectionOutputs:
-        features = self.model.get_backbone_features(images)
+        # Expected input shape is [2, B, C, H, W]
+        x, _ = images.unbind()
+
+        features = self.model.get_backbone_features(x)
 
         cls_logits, bbox_regression, _, phenotypes_pred = self.model.ssd_forward(
-            features, device=images.device
+            features, device=x.device
         )
 
-        anchors = self.anchor_generator(images, list(features.values()))
+        anchors = self.anchor_generator(x, list(features.values()))
 
         head_outputs = LettuceDetectionOutputs(
             cls_logits=cls_logits,
@@ -108,6 +111,7 @@ class DualBranchLettuceModel(ModifiedSSDLiteMobileViTBase):
         return end_points
 
     def forward(self, images: Tensor) -> LettuceDetectionOutputs:
+        # Expected input shape is [2, B, C, H, W]
         x, y = images.unbind()
 
         features = self.get_backbone_features(x, y)
