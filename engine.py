@@ -209,10 +209,38 @@ class LettuceDetectorTrainer(BaseTrainer):
                 for t in targets
             ]
 
+            if targets is None:
+                torch._assert(False, "targets should not be none when in training mode")
+            else:
+                for target in targets:
+                    boxes = target["boxes"]
+                    if isinstance(boxes, torch.Tensor):
+                        torch._assert(
+                            len(boxes.shape) == 2 and boxes.shape[-1] == 4,
+                            f"Expected target boxes to be a tensor of shape [N, 4], got {boxes.shape}.",
+                        )
+                    else:
+                        torch._assert(False, f"Expected target boxes to be of type Tensor, got {type(boxes)}.")
+
             image_tensors: List[Tensor] = [item.x if isinstance(item, DualTensor) else item for item in images]
             aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
 
             images, targets = self.transform(image_tensors, targets)
+
+            # Check for degenerate boxes
+            if targets is not None:
+                for target_idx, target in enumerate(targets):
+                    boxes = target["boxes"]
+                    degenerate_boxes = boxes[:, 2:] <= boxes[:, :2]
+                    if degenerate_boxes.any():
+                        bb_idx = torch.where(degenerate_boxes.any(dim=1))[0][0]
+                        degen_bb: List[float] = boxes[bb_idx].tolist()
+                        torch._assert(
+                            False,
+                            "All bounding boxes should have positive height and width."
+                            f" Found invalid box {degen_bb} for target at index {target_idx}.",
+                        )
+
             aux, _ = self.transform(aux_tensors)
             stacked = torch.stack([images.tensors, aux.tensors], dim=0)
 

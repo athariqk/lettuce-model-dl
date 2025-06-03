@@ -120,7 +120,7 @@ class DualBranchLettuceModel(ModifiedSSDLiteMobileViTBase):
             features, device=x.device
         )
 
-        anchors = self.anchor_generator(images, list(features.values()))
+        anchors = self.anchor_generator(x, list(features.values()))
 
         head_outputs = LettuceDetectionOutputs(
             cls_logits=cls_logits,

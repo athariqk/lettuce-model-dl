@@ -65,7 +65,7 @@ class LettuceModelEval(nn.Module):
             box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
         self.box_coder = box_coder
 
-    def forward(self, images: DualTensor | Tensor):
+    def forward(self, images: List[DualTensor | Tensor]):
         # get the original image sizes
         original_image_sizes: List[Tuple[int, int]] = []
         for img in images:
