@@ -1,11 +1,12 @@
 import os
-from typing import Any, Optional, List, Tuple
+from typing import Any, Optional, List, Tuple, Mapping
 
 import torch
 from torch import nn, Tensor
 from torchvision.models.detection._utils import BoxCoder
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
 
+from custom_types import DualTensor
 from .utils import retrieve_out_channels, postprocess_lettuce_detections
 
 from .model import PhenotypeRegressor, SingleBranchLettuceModel, DualBranchLettuceModel
@@ -25,39 +26,28 @@ __all__ = [
 class LettuceModelEval(nn.Module):
     def __init__(
             self,
-            size,
-            aspect_ratios: List[List[int]],
+            model = None,
+            size=(320, 320),
             image_mean: Optional[List[float]] = None,
             image_std: Optional[List[float]] = None,
             phenotype_means: Optional[List[float]] = None,
             phenotype_stds: Optional[List[float]] = None,
-            pretrained: str = None,
-            multimodal=False,
+            multimodal = False,
+            transform = None,
+            box_coder = None,
             **kwargs
     ):
         super().__init__()
-        if multimodal:
-            self.model = SingleBranchLettuceModel(
-                size=size,
-                aspect_ratios=aspect_ratios,
-                phenotype_means=phenotype_means,
-                phenotype_stds=phenotype_stds,
-                image_mean=image_mean,
-                image_std=image_std,
-                pretrained=pretrained,
-                **kwargs
-            )
-        else:
-            self.model = DualBranchLettuceModel(
-                size=size,
-                aspect_ratios=aspect_ratios,
-                phenotype_means=phenotype_means,
-                phenotype_stds=phenotype_stds,
-                image_mean=image_mean,
-                image_std=image_std,
-                pretrained=pretrained,
-                **kwargs
-            )
+        if model is None:
+            if multimodal:
+                model = lettuce_model_multimodal(
+                    phenotype_means=phenotype_means, phenotype_stds=phenotype_stds, **kwargs
+                )
+            else:
+                model = lettuce_model(
+                    phenotype_means=phenotype_means, phenotype_stds=phenotype_stds, **kwargs
+                )
+        self.model = model
 
         self.model.eval()
 
@@ -65,13 +55,17 @@ class LettuceModelEval(nn.Module):
             image_mean = [0.485, 0.456, 0.406]
         if image_std is None:
             image_std = [0.229, 0.224, 0.225]
-        self.transform = GeneralizedRCNNTransform(
-            min(size), max(size), image_mean, image_std, size_divisible=1, fixed_size=size, **kwargs
-        )
+        if transform is None:
+            transform = GeneralizedRCNNTransform(
+                min(size), max(size), image_mean, image_std, size_divisible=1, fixed_size=size, **kwargs
+            )
+        self.transform = transform
 
-        self.box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
+        if box_coder is None:
+            box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
+        self.box_coder = box_coder
 
-    def forward(self, images: Tensor, targets: Optional):
+    def forward(self, images: DualTensor | Tensor):
         # get the original image sizes
         original_image_sizes: List[Tuple[int, int]] = []
         for img in images:
@@ -82,8 +76,13 @@ class LettuceModelEval(nn.Module):
             )
             original_image_sizes.append((val[0], val[1]))
 
-        images, targets = self.transform(images, targets)
-        output = self.model(images.tensors)
+        image_tensors: List[Tensor] = [item.x if isinstance(item, DualTensor) else item for item in images]
+        aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
+        images, _ = self.transform(image_tensors)
+        aux, _ = self.transform(aux_tensors)
+        stacked = torch.stack([images.tensors, aux.tensors], dim=0)
+
+        output = self.model(stacked)
 
         outputs = postprocess_lettuce_detections(
             output,
@@ -100,6 +99,10 @@ class LettuceModelEval(nn.Module):
 
         return outputs
 
+    def load_state_dict(self, state_dict: Mapping[str, Any],
+                        strict: bool = True, assign: bool = False):
+        self.model.load_state_dict(state_dict, strict, assign)
+
 
 def lettuce_model(
         trainable_backbone_layers: Optional[int] = None,
@@ -114,8 +117,6 @@ def lettuce_model(
     model = SingleBranchLettuceModel(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
-        image_mean=[0.0, 0.0, 0.0],
-        image_std=[1.0, 1.0, 1.0],
         pretrained=os.path.join(ROOT_DIR, variant),
         **kwargs
     )
@@ -140,8 +141,6 @@ def lettuce_model_multimodal(
     model = DualBranchLettuceModel(
         size=(320, 320),
         aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
-        image_mean=[0.0, 0.0, 0.0],
-        image_std=[1.0, 1.0, 1.0],
         pretrained=os.path.join(ROOT_DIR, variant),
         **kwargs
     )

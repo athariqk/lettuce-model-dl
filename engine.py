@@ -15,6 +15,7 @@ import my_utils as utils
 from coco_eval import CocoEvaluator
 from coco_utils import get_coco_api_from_dataset
 from custom_types import DualTensor
+from neural_networks import LettuceModelEval, DualBranchLettuceModel
 
 from neural_networks.custom_types import LettuceDetectionOutputs
 from neural_networks.model import ModifiedSSDLiteMobileViTBase
@@ -36,6 +37,7 @@ class LettuceDetectorTrainer(BaseTrainer):
             model,
             optimizer,
             data_loader,
+            data_loader_test,
             epoch,
             scaler,
             phenotype_names,
@@ -52,6 +54,7 @@ class LettuceDetectorTrainer(BaseTrainer):
         self.model = model
         self.optimizer = optimizer
         self.data_loader = data_loader
+        self.data_loader_test = data_loader_test
         self.epoch = epoch
         self.scaler = scaler
         self.phenotype_names = phenotype_names
@@ -71,6 +74,14 @@ class LettuceDetectorTrainer(BaseTrainer):
         self.label_smoothing = 0.3
 
         self.phenotype_loss_weight = phenotype_loss_weight
+
+        self.eval_model = LettuceModelEval(
+            model=self.model,
+            image_mean=image_mean,
+            image_std=image_std,
+            transform=self.transform,
+            box_coder=self.box_coder,
+        )
 
     def compute_loss(
             self,
@@ -261,43 +272,17 @@ class LettuceDetectorTrainer(BaseTrainer):
         metric_logger = utils.MetricLogger(delimiter="  ")
         header = "Test:"
 
-        coco = get_coco_api_from_dataset(self.data_loader.dataset)
+        coco = get_coco_api_from_dataset(self.data_loader_test.dataset)
         iou_types = self._get_iou_types()
         coco_evaluator = CocoEvaluator(coco, iou_types, self.phenotype_names, 0.5)
 
-        for images, targets in metric_logger.log_every(self.data_loader, 100, header):
+        for images, targets in metric_logger.log_every(self.data_loader_test, 100, header):
             images = list(img.to(device) for img in images)
 
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             model_time = time.time()
-            # get the original image sizes
-            original_image_sizes: List[Tuple[int, int]] = []
-            for img in images:
-                val = img.shape[-2:]
-                torch._assert(
-                    len(val) == 2,
-                    f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
-                )
-                original_image_sizes.append((val[0], val[1]))
-            image_tensors: List[Tensor] = [item.x if isinstance(item, DualTensor) else item for item in images]
-            aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
-            images, _ = self.transform(image_tensors)
-            aux, _ = self.transform(aux_tensors)
-            stacked = torch.stack([images.tensors, aux.tensors], dim=0)
-            outputs = self.model(stacked)
-            outputs = postprocess_lettuce_detections(
-                outputs,
-                images.image_sizes,
-                self.box_coder,
-                0.01,
-                self.model.phenotype_stds,
-                self.model.phenotype_means,
-                400,
-                200,
-                0.5
-            )
-            outputs = self.transform.postprocess(outputs, images.image_sizes, original_image_sizes)
+            outputs = self.eval_model(images)
 
             outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
             model_time = time.time() - model_time

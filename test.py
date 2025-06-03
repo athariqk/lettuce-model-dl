@@ -444,9 +444,7 @@ def main(args):
     # model = ssdlite320_mobilenet_v3_large(weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT)
     # checkpoint = torch.load("model_95.pth", map_location=torch.device('cpu'), weights_only=False)
     # model.load_state_dict(checkpoint["model"])
-    model = LettuceModelEval(size=(320, 320),
-                             aspect_ratios=[[2, 3], [2, 3], [2, 3], [2, 3], [2, 3], [2]],
-                             image_mean=[0.0, 0.0, 0.0],
+    model = LettuceModelEval(image_mean=[0.0, 0.0, 0.0],
                              image_std=[1.0, 1.0, 1.0])
     weights = torch.load(args.weights, map_location="cpu", weights_only=False)["model"]
     model.load_state_dict(weights)
