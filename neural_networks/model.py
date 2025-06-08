@@ -45,6 +45,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             pretrained: str = None,
             phenotype_loss_weight: float = 0.0001,
             multimodal = False,
+            log_transform = False,
             **kwargs
     ):
         super().__init__()
@@ -91,6 +92,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         self.phenotype_loss_weight = phenotype_loss_weight
         self.multimodal = multimodal
+
+        self.log_transform = log_transform
 
     # @torch.jit.unused
     def eager_outputs(
@@ -366,7 +369,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 score, idxs = score.topk(num_topk)
                 box = box[idxs]
                 phenotype = (phenotype[idxs] * self.phenotype_stds) + self.phenotype_means # denormalize
-                phenotype = torch.expm1(phenotype)
+                if self.log_transform:
+                    phenotype = torch.expm1(phenotype)
 
                 image_boxes.append(box)
                 image_scores.append(score)

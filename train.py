@@ -51,6 +51,7 @@ def get_transform(is_train, args):
             no_aug=False,
             phenotype_means=args.phenotype_means,
             phenotype_stds=args.phenotype_stds,
+            log_transform=args.log_transform,
         )
     elif args.data_augmentation == "lettuce_rgbd_noaug":
         return presets.DetectionPresetLettuceRGBD(
@@ -58,6 +59,7 @@ def get_transform(is_train, args):
             no_aug=True,
             phenotype_means=args.phenotype_means,
             phenotype_stds=args.phenotype_stds,
+            log_transform=args.log_transform,
         )
 
     if is_train:
@@ -193,6 +195,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--phenotype-means", required=True, nargs="+", type=float)
     parser.add_argument("--phenotype-stds", required=True, nargs="+", type=float)
 
+    parser.add_argument("--log-transform", action="store_true")
+
     return parser
 
 
@@ -268,6 +272,8 @@ def k_fold_training(args, num_classes, full_dataset, device):
             kwargs["phenotype_means"] = args.phenotype_means
         if args.phenotype_stds:
             kwargs["phenotype_stds"] = args.phenotype_stds
+        if args.log_transform:
+            kwargs["log_transform"] = args.log_transform
 
         model = get_model(args.model, num_classes=num_classes, **kwargs)
 

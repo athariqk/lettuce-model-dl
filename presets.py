@@ -160,7 +160,7 @@ class DetectionPresetTrainAlbumentation:
 
 
 class DetectionPresetLettuceRGBD:
-    def __init__(self, is_train: bool, no_aug: bool, phenotype_means: List[float], phenotype_stds: List[float]):
+    def __init__(self, is_train: bool, no_aug: bool, phenotype_means: List[float], phenotype_stds: List[float], log_transform):
         T, tv_tensors = get_modules(True)
 
         self.transforms = T.Compose([
@@ -187,6 +187,8 @@ class DetectionPresetLettuceRGBD:
 
         self.is_train = is_train
 
+        self.log_transform = log_transform
+
         # self.color_transforms = T.Compose([
         #     T.RandomPhotometricDistort(brightness=(0.5, 1.5),
         #                                contrast=(0.5, 1.5),
@@ -199,9 +201,10 @@ class DetectionPresetLettuceRGBD:
 
         if self.is_train:
             phenotypes = target["phenotypes"]
-            log_phenotypes = torch.log1p(phenotypes)
+            if self.log_transform:
+                phenotypes = torch.log1p(phenotypes)
             # this is possible by broadcasting
-            normalized_phenotypes = (log_phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
+            normalized_phenotypes = (phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
             target["phenotypes"] = normalized_phenotypes
 
         if isinstance(img, list) and len(img) == 2:
