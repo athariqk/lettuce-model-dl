@@ -366,6 +366,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 score, idxs = score.topk(num_topk)
                 box = box[idxs]
                 phenotype = (phenotype[idxs] * self.phenotype_stds) + self.phenotype_means # denormalize
+                phenotype = torch.expm1(phenotype)
 
                 image_boxes.append(box)
                 image_scores.append(score)

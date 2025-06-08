@@ -199,8 +199,9 @@ class DetectionPresetLettuceRGBD:
 
         if self.is_train:
             phenotypes = target["phenotypes"]
+            log_phenotypes = torch.log1p(phenotypes)
             # this is possible by broadcasting
-            normalized_phenotypes = (phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
+            normalized_phenotypes = (log_phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
             target["phenotypes"] = normalized_phenotypes
 
         if isinstance(img, list) and len(img) == 2:

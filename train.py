@@ -273,8 +273,13 @@ def k_fold_training(args, num_classes, full_dataset, device):
 
         if args.saved_weights:
             print("Loading saved weights: {}".format(args.saved_weights))
-            weights = torch.load(args.saved_weights, weights_only=False)["model"]
+            weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
             model.load_state_dict(weights)
+
+        if args.phenotype_means and hasattr(model, "phenotype_means"):
+            model.phenotype_means = torch.tensor(args.phenotype_means).unsqueeze(0).type_as(model.phenotype_means)
+        if args.phenotype_stds and hasattr(model, "phenotype_stds"):
+            model.phenotype_stds = torch.tensor(args.phenotype_stds).unsqueeze(0).type_as(model.phenotype_means)
 
         model.to(device)
         if args.distributed and args.sync_bn:
@@ -481,7 +486,7 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
 
     if args.saved_weights:
         print("Loading saved weights: {}".format(args.saved_weights))
-        weights = torch.load(args.saved_weights, weights_only=False)["model"]
+        weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
         model.load_state_dict(weights)
 
     model.to(device)
