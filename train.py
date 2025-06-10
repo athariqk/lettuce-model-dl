@@ -2,6 +2,7 @@ import datetime
 import os
 import time
 from copy import copy
+from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -200,6 +201,48 @@ def get_args_parser(add_help=True):
     return parser
 
 
+def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: List[str]) -> Tuple[
+    torch.Tensor, torch.Tensor]:
+    """
+    Menghitung mean dan standar deviasi untuk target fenotipe dalam sebuah subset dataset.
+
+    Args:
+        subset (torch.utils.data.Subset): Subset data (latih atau uji).
+        phenotype_names (List[str]): Daftar nama fenotipe yang akan dianalisis.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: Sebuah tuple berisi (mean, std_dev) untuk setiap fenotipe.
+    """
+    all_phenotypes = []
+    # 'subset.dataset' mengakses dataset asli (full_dataset) yang dibungkus oleh Subset
+    original_dataset = subset.dataset
+
+    # Iterasi melalui indeks yang ada di dalam subset
+    for idx in subset.indices:
+        # Memanggil __getitem__ dari dataset asli untuk mendapatkan data yang sudah diproses
+        # Ini akan memanggil _load_image_pair, _load_target, dan wrap_to_tv2
+        _, target = original_dataset[idx]
+
+        # Periksa apakah target fenotipe ada dan tidak kosong
+        if "phenotypes" in target and target["phenotypes"].numel() > 0:
+            all_phenotypes.append(target["phenotypes"])
+
+    if not all_phenotypes:
+        # Jika tidak ada data fenotipe, kembalikan tensor kosong
+        num_phenotypes = len(phenotype_names)
+        return torch.full((num_phenotypes,), float('nan')), torch.full((num_phenotypes,), float('nan'))
+
+    # Gabungkan semua tensor fenotipe menjadi satu tensor besar
+    combined_phenotypes = torch.cat(all_phenotypes, dim=0)
+
+    # Kalkulasi mean dan standar deviasi untuk setiap kolom (setiap fenotipe)
+    # dim=0 karena kita menghitung statistik per fenotipe
+    mean = torch.mean(combined_phenotypes, dim=0)
+    std_dev = torch.std(combined_phenotypes, dim=0)
+
+    return mean, std_dev
+
+
 def k_fold_training(args, num_classes, full_dataset, device):
     kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=96)
     fold_results = []
@@ -215,6 +258,18 @@ def k_fold_training(args, num_classes, full_dataset, device):
 
         train_subset = torch.utils.data.Subset(full_dataset, train_idx)
         test_subset = torch.utils.data.Subset(full_dataset, test_idx)
+
+        print("-" * 50)
+        print(f"Calculating phenotype statistics for Fold {fold + 1}:")
+
+        # Kalkulasi untuk subset Latih (Train)
+        phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names)
+        for i, name in enumerate(args.phenotype_names):
+            # Cek jika kalkulasi valid (bukan NaN)
+            if not torch.isnan(phenotype_means[i]):
+                print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
+            else:
+                print(f"    - {name}: No phenotype data found.")
 
         train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
         test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
@@ -268,10 +323,10 @@ def k_fold_training(args, num_classes, full_dataset, device):
          # do the same for standard_training
         if args.phenotype_loss_weight:
             kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
-        if args.phenotype_means:
-            kwargs["phenotype_means"] = args.phenotype_means
-        if args.phenotype_stds:
-            kwargs["phenotype_stds"] = args.phenotype_stds
+        # if args.phenotype_means:
+        #     kwargs["phenotype_means"] = args.phenotype_means
+        # if args.phenotype_stds:
+        #     kwargs["phenotype_stds"] = args.phenotype_stds
         if args.log_transform:
             kwargs["log_transform"] = args.log_transform
 
@@ -282,10 +337,10 @@ def k_fold_training(args, num_classes, full_dataset, device):
             weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
             model.load_state_dict(weights)
 
-        if args.phenotype_means and hasattr(model, "phenotype_means"):
-            model.phenotype_means = torch.tensor(args.phenotype_means).unsqueeze(0).type_as(model.phenotype_means)
-        if args.phenotype_stds and hasattr(model, "phenotype_stds"):
-            model.phenotype_stds = torch.tensor(args.phenotype_stds).unsqueeze(0).type_as(model.phenotype_means)
+        if hasattr(model, "phenotype_means"):
+            model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
+        if hasattr(model, "phenotype_stds"):
+            model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
         model.to(device)
         if args.distributed and args.sync_bn:

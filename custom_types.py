@@ -5,8 +5,8 @@ class DualTensor:
     def __init__(self, x: torch.Tensor, y: torch.Tensor):
         if not (isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor)):
             raise TypeError("Both x and y must be a tensor.")
-        self.x = x
-        self.y = y
+        self.x = x # [C, H, W]
+        self.y = y # [C, H, W]
 
     @property
     def shape(self):
