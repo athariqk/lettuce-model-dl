@@ -193,8 +193,8 @@ def get_args_parser(add_help=True):
 
     parser.add_argument("--phenotype-names", nargs="+", type=str)
     parser.add_argument("--phenotype-loss-weight", type=float)
-    parser.add_argument("--phenotype-means", required=True, nargs="+", type=float)
-    parser.add_argument("--phenotype-stds", required=True, nargs="+", type=float)
+    parser.add_argument("--phenotype-means", required=False, nargs="+", type=float)
+    parser.add_argument("--phenotype-stds", required=False, nargs="+", type=float)
 
     parser.add_argument("--log-transform", action="store_true")
 
@@ -270,6 +270,9 @@ def k_fold_training(args, num_classes, full_dataset, device):
                 print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
             else:
                 print(f"    - {name}: No phenotype data found.")
+
+        args.phenotype_means = phenotype_means
+        args.phenotype_stds = phenotype_stds
 
         train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
         test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
