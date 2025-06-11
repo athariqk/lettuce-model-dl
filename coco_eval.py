@@ -326,7 +326,13 @@ class CocoEvaluator:
                     try:
                         r2 = r2_score(gt_values, pred_values)
                         rmse = np.sqrt(mean_squared_error(gt_values, pred_values))
-                        mape = mean_absolute_percentage_error(gt_values, pred_values)
+                        # Filter out zero values in the ground truth for MAPE calculation
+                        non_zero_mask = gt_values != 0
+                        if np.any(non_zero_mask):
+                            mape = mean_absolute_percentage_error(gt_values[non_zero_mask], pred_values[non_zero_mask])
+                        else:
+                            # Set MAPE to NaN if all ground truth values are zero
+                            mape = np.nan
                         nrmse = rmse / gt_std
 
                         self.phenotype_metrics_results[name]['r2'] = r2
