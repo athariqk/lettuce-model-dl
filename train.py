@@ -323,20 +323,20 @@ def k_fold_training(args, num_classes, full_dataset, device):
         test_subset = torch.utils.data.Subset(full_dataset, test_idx)
 
         # Kalkulasi untuk subset Latih (Train)
-        # if not args.test_only:
-        #     print("-" * 50)
-        #     print(f"Calculating phenotype statistics for Fold {fold + 1}:")
-        #
-        #     phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names)
-        #     for i, name in enumerate(args.phenotype_names):
-        #         # Cek jika kalkulasi valid (bukan NaN)
-        #         if not torch.isnan(phenotype_means[i]):
-        #             print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
-        #         else:
-        #             print(f"    - {name}: No phenotype data found.")
-        #
-        #     args.phenotype_means = phenotype_means
-        #     args.phenotype_stds = phenotype_stds
+        if not args.test_only:
+            print("-" * 50)
+            print(f"Calculating phenotype statistics for Fold {fold + 1}:")
+
+            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names)
+            for i, name in enumerate(args.phenotype_names):
+                # Cek jika kalkulasi valid (bukan NaN)
+                if not torch.isnan(phenotype_means[i]):
+                    print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
+                else:
+                    print(f"    - {name}: No phenotype data found.")
+
+            args.phenotype_means = phenotype_means
+            args.phenotype_stds = phenotype_stds
 
         train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
         test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
@@ -404,11 +404,11 @@ def k_fold_training(args, num_classes, full_dataset, device):
             weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
             model.load_state_dict(weights)
 
-        # if not args.test_only:
-        #     if hasattr(model, "phenotype_means"):
-        #         model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
-        #     if hasattr(model, "phenotype_stds"):
-        #         model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
+        if not args.test_only:
+            if hasattr(model, "phenotype_means"):
+                model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
+            if hasattr(model, "phenotype_stds"):
+                model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
         model.to(device)
         if args.distributed and args.sync_bn:
