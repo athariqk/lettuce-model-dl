@@ -1,6 +1,8 @@
 import datetime
 import os
+import pprint
 import time
+from contextlib import redirect_stdout
 from copy import copy
 from typing import List, Tuple
 
@@ -142,6 +144,11 @@ def get_args_parser(add_help=True):
     parser.add_argument("--print-freq", default=20, type=int, help="print frequency")
     parser.add_argument("--output-dir", default=".", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument(
+        "--resume-kfold",
+        action="store_true",
+        help="Resume K-Fold training from the last saved checkpoint in the output directory.",
+    )
     parser.add_argument("--start_epoch", default=0, type=int, help="start epoch")
     parser.add_argument("--aspect-ratio-group-factor", default=3, type=int)
     parser.add_argument("--rpn-score-thresh", default=None, type=float, help="rpn score threshold for faster-rcnn")
@@ -243,13 +250,69 @@ def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: 
     return mean, std_dev
 
 
+def save_evaluator_summary(evaluator: CocoEvaluator, output_path: str):
+    """Saves the summary from a CocoEvaluator to a file."""
+    if not evaluator:
+        print(f"Warning: Attempted to save summary, but evaluator is None.")
+        return
+    if not utils.is_main_process():
+        return
+    print(f"Saving evaluation summary to {output_path}")
+    with open(output_path, "w") as f:
+        with redirect_stdout(f):
+            # The summarize method prints the results.
+            evaluator.summarize()
+
+
 def k_fold_training(args, num_classes, full_dataset, device):
     kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=96)
-    fold_results = []
-    fold_phenotype_metrics = []
+
+    fold_results = [None] * args.k_folds
+    fold_phenotype_metrics = [None] * args.k_folds
+    resume_fold_idx = -1
+
+    if args.resume_kfold:
+        # Check folders backwards to find the last one with a checkpoint
+        for i in range(args.k_folds, 0, -1):
+            fold_dir = os.path.join(args.output_dir, f"fold_{i}")
+            checkpoint_path = os.path.join(fold_dir, "checkpoint.pth")
+            if os.path.exists(checkpoint_path):
+                chkpt = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
+                # Check if the fold was completed
+                if chkpt["epoch"] == args.epochs - 1:
+                    # This fold finished, so we resume from the *next* fold
+                    resume_fold_idx = i
+                else:
+                    # This fold was interrupted, so we resume *this* fold
+                    resume_fold_idx = i - 1
+                break
+        if resume_fold_idx != -1:
+            # If we are resuming from the next fold, the index is correct.
+            # If we are resuming from an incomplete fold, the index is also correct.
+            # E.g., if fold 3 (index 2) is incomplete, resume_fold_idx is 2. The loop will skip 0, 1.
+            print(f"--- Resuming K-Fold training. Starting from Fold {resume_fold_idx + 1} ---")
+        else:
+            print("--- --resume-kfold specified, but no checkpoints found. Starting from scratch. ---")
 
     print(f"Starting {args.k_folds}-Fold Cross-Validation")
     for fold, (train_idx, test_idx) in enumerate(kf.split(full_dataset)):
+        # Logic to skip completed folds.
+        if fold < resume_fold_idx:
+            print(f"--- Skipping completed Fold {fold + 1} ---")
+            # Load the saved numerical results for this skipped fold to ensure correct final averaging
+            fold_dir = os.path.join(args.output_dir, f"fold_{fold + 1}")
+            results_path = os.path.join(fold_dir, "fold_results.npz")
+            if os.path.exists(results_path):
+                results_data = np.load(results_path, allow_pickle=True)
+                if 'coco_stats' in results_data and results_data['coco_stats'].any():
+                    fold_results[fold] = results_data['coco_stats']
+                if 'pheno_stats' in results_data and results_data['pheno_stats'].any():
+                    fold_phenotype_metrics[fold] = results_data['pheno_stats'].item()
+                print(f"Loaded past results for Fold {fold + 1}")
+            else:
+                print(f"Warning: Could not find results file for skipped Fold {fold + 1} at {results_path}")
+            continue
+
         print(f"Fold {fold + 1}/{args.k_folds}")
 
         current_fold_output_dir = os.path.join(args.output_dir, f"fold_{fold + 1}")
@@ -259,20 +322,21 @@ def k_fold_training(args, num_classes, full_dataset, device):
         train_subset = torch.utils.data.Subset(full_dataset, train_idx)
         test_subset = torch.utils.data.Subset(full_dataset, test_idx)
 
-        print("-" * 50)
-        print(f"Calculating phenotype statistics for Fold {fold + 1}:")
-
         # Kalkulasi untuk subset Latih (Train)
-        phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names)
-        for i, name in enumerate(args.phenotype_names):
-            # Cek jika kalkulasi valid (bukan NaN)
-            if not torch.isnan(phenotype_means[i]):
-                print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
-            else:
-                print(f"    - {name}: No phenotype data found.")
-
-        args.phenotype_means = phenotype_means
-        args.phenotype_stds = phenotype_stds
+        # if not args.test_only:
+        #     print("-" * 50)
+        #     print(f"Calculating phenotype statistics for Fold {fold + 1}:")
+        #
+        #     phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names)
+        #     for i, name in enumerate(args.phenotype_names):
+        #         # Cek jika kalkulasi valid (bukan NaN)
+        #         if not torch.isnan(phenotype_means[i]):
+        #             print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
+        #         else:
+        #             print(f"    - {name}: No phenotype data found.")
+        #
+        #     args.phenotype_means = phenotype_means
+        #     args.phenotype_stds = phenotype_stds
 
         train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
         test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
@@ -340,10 +404,11 @@ def k_fold_training(args, num_classes, full_dataset, device):
             weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
             model.load_state_dict(weights)
 
-        if hasattr(model, "phenotype_means"):
-            model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
-        if hasattr(model, "phenotype_stds"):
-            model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
+        # if not args.test_only:
+        #     if hasattr(model, "phenotype_means"):
+        #         model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
+        #     if hasattr(model, "phenotype_stds"):
+        #         model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
         model.to(device)
         if args.distributed and args.sync_bn:
@@ -395,9 +460,24 @@ def k_fold_training(args, num_classes, full_dataset, device):
                 f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
             )
 
+        args.start_epoch = 0  # Reset start_epoch for each new fold
+        if args.resume_kfold and fold == resume_fold_idx:
+            checkpoint_path = os.path.join(current_fold_output_dir, "checkpoint.pth")
+            if os.path.exists(checkpoint_path):
+                checkpoint = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
+                model_without_ddp.load_state_dict(checkpoint["model"])
+                optimizer.load_state_dict(checkpoint["optimizer"])
+                lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+                args.start_epoch = checkpoint["epoch"] + 1
+                if scaler and "scaler" in checkpoint:
+                    scaler.load_state_dict(checkpoint["scaler"])
+                print(f"--- Successfully resumed Fold {fold + 1} from Epoch {args.start_epoch} ---")
+
         print(f"Start training for Fold {fold + 1}")
         start_time = time.time()
+        last_epoch_evaluator = None
         for epoch in range(args.start_epoch, args.epochs):
+            model.train()
             if args.distributed:
                 train_sampler.set_epoch(epoch)
             train_one_epoch(model, optimizer, data_loader_train, device, epoch, args.print_freq, scaler)
@@ -418,28 +498,35 @@ def k_fold_training(args, num_classes, full_dataset, device):
 
             # evaluate after every epoch
             evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
+            last_epoch_evaluator = evaluator
 
-            if evaluator and evaluator.iou_types and evaluator.phenotype_metrics_results:
-                first_iou_type = evaluator.iou_types[0]  # Typically "bbox"
+            if evaluator and evaluator.iou_types:
+                first_iou_type = evaluator.iou_types[0]
                 if first_iou_type in evaluator.coco_eval:
                     eval_obj = evaluator.coco_eval[first_iou_type]
-                    fold_epoch_stats = eval_obj.stats
-                    if fold_epoch_stats is not None and len(fold_epoch_stats) > 0:
-                        if len(fold_results) > fold:  # if entry for this fold exists
-                            fold_results[fold] = fold_epoch_stats  # update with latest epoch
-                        else:
-                            fold_results.append(fold_epoch_stats)
+                    if eval_obj.stats is not None and len(eval_obj.stats) > 0:
+                        fold_results[fold] = eval_obj.stats
+                if evaluator.phenotype_metrics_results:
+                    fold_phenotype_metrics[fold] = evaluator.phenotype_metrics_results
 
-                if len(fold_phenotype_metrics) > fold:  # if entry for this fold exists
-                    fold_phenotype_metrics[fold] = evaluator.phenotype_metrics_results  # update with latest epoch
-                else:
-                    fold_phenotype_metrics.append(evaluator.phenotype_metrics_results)
+        # Save both text summary and numerical results at the end of each fold.
+        if last_epoch_evaluator and args.output_dir:
+            summary_file_path = os.path.join(current_fold_output_dir, "evaluation_summary.txt")
+            save_evaluator_summary(last_epoch_evaluator, summary_file_path)
+
+            fold_summary_path = os.path.join(current_fold_output_dir, "fold_results.npz")
+            coco_stats = fold_results[fold]
+            pheno_stats = fold_phenotype_metrics[fold]
+
+            if utils.is_main_process():
+                np.savez(fold_summary_path, coco_stats=coco_stats, pheno_stats=pheno_stats)
+                print(f"Saved fold numerical results to {fold_summary_path}")
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print(f"Training time {total_time_str}")
 
-    if fold_results:
+    if any(res is not None for res in fold_results):
         valid_fold_stats = [stats for stats in fold_results if stats is not None and len(stats) > 0]
         if valid_fold_stats:
             all_fold_stats_np = np.array(valid_fold_stats)
@@ -480,21 +567,21 @@ def k_fold_training(args, num_classes, full_dataset, device):
     else:
         print("No results collected from K-Folds.")
 
-    if fold_phenotype_metrics:
+    if any(res is not None for res in fold_phenotype_metrics):
         print("Average K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
         aggregated_pheno_results = {}
-        phenotype_keys = ["fresh_weight", "height"]  # From engine.py
+        phenotype_keys = args.phenotype_names
         metric_keys = ["r2", "rmse", "mape"]
+
+        valid_pheno_metrics = [m for m in fold_phenotype_metrics if m is not None]
 
         for p_key in phenotype_keys:
             aggregated_pheno_results[p_key] = {}
             for m_key in metric_keys:
-                # Collect valid (non-NaN) metrics for this phenotype and metric type from all folds
                 values = [
                     fold_data[p_key][m_key]
-                    for fold_data in fold_phenotype_metrics
-                    if
-                    fold_data and p_key in fold_data and m_key in fold_data[p_key] and not np.isnan(
+                    for fold_data in valid_pheno_metrics
+                    if fold_data and p_key in fold_data and m_key in fold_data[p_key] and not np.isnan(
                         fold_data[p_key][m_key])
                 ]
                 if values:
@@ -502,17 +589,15 @@ def k_fold_training(args, num_classes, full_dataset, device):
                     std_val = np.std(values)
                     aggregated_pheno_results[p_key][f'{m_key}_mean'] = mean_val
                     aggregated_pheno_results[p_key][f'{m_key}_std'] = std_val
-                    if m_key == 'mape':  # MAPE is printed as percentage
-                        print(
-                            f"  {p_key:<15} {m_key:<10}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%")
+                    if m_key == 'mape':
+                        print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%")
                     else:
                         print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val:.4f}, Std = {std_val:.4f}")
                 else:
-                    aggregated_pheno_results[p_key][f'{m_key}_mean'] = np.nan  # Store NaN if no valid data
+                    aggregated_pheno_results[p_key][f'{m_key}_mean'] = np.nan
                     aggregated_pheno_results[p_key][f'{m_key}_std'] = np.nan
                     print(f"  {p_key:<15} {m_key:<10}: Not enough valid data across folds.")
 
-        # Save Phenotype summary
         if args.output_dir and utils.is_main_process():
             with open(os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt"), "w") as f:
                 f.write(
@@ -524,15 +609,14 @@ def k_fold_training(args, num_classes, full_dataset, device):
                         std_val = aggregated_pheno_results[p_key].get(f'{m_key}_std', np.nan)
                         if not np.isnan(mean_val):
                             if m_key == 'mape':
-                                f.write(
-                                    f"    {m_key:<8}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%\n")
+                                f.write(f"    {m_key:<8}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%\n")
                             else:
                                 f.write(f"    {m_key:<8}: Mean = {mean_val:.4f}, Std = {std_val:.4f}\n")
                         else:
                             f.write(f"    {m_key:<8}: Not enough valid data across folds.\n")
             np.savez(os.path.join(args.output_dir, "kfold_phenotype_stats.npz"),
                      aggregated_metrics=aggregated_pheno_results,
-                     all_fold_metrics=fold_phenotype_metrics)
+                     all_fold_metrics=valid_pheno_metrics)
     else:
         print("No Phenotype metrics collected from K-Folds.")
 
