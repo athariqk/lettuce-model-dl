@@ -208,14 +208,16 @@ def get_args_parser(add_help=True):
     return parser
 
 
-def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: List[str]) -> Tuple[
+def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: List[str], log_transform: bool) -> Tuple[
     torch.Tensor, torch.Tensor]:
     """
     Menghitung mean dan standar deviasi untuk target fenotipe dalam sebuah subset dataset.
+    Secara opsional menerapkan transformasi log (log1p) sebelum kalkulasi.
 
     Args:
         subset (torch.utils.data.Subset): Subset data (latih atau uji).
         phenotype_names (List[str]): Daftar nama fenotipe yang akan dianalisis.
+        log_transform (bool): Jika True, terapkan transformasi log (log1p) ke nilai fenotipe.
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Sebuah tuple berisi (mean, std_dev) untuk setiap fenotipe.
@@ -232,7 +234,12 @@ def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: 
 
         # Periksa apakah target fenotipe ada dan tidak kosong
         if "phenotypes" in target and target["phenotypes"].numel() > 0:
-            all_phenotypes.append(target["phenotypes"])
+            phenotypes = target["phenotypes"]
+            if log_transform:
+                # Gunakan log1p untuk stabilitas numerik dan menangani nilai 0
+                # log1p(x) = log(1 + x)
+                phenotypes = torch.log1p(phenotypes)
+            all_phenotypes.append(phenotypes)
 
     if not all_phenotypes:
         # Jika tidak ada data fenotipe, kembalikan tensor kosong
@@ -327,7 +334,7 @@ def k_fold_training(args, num_classes, full_dataset, device):
             print("-" * 50)
             print(f"Calculating phenotype statistics for Fold {fold + 1}:")
 
-            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names)
+            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names, args.log_transform)
             for i, name in enumerate(args.phenotype_names):
                 # Cek jika kalkulasi valid (bukan NaN)
                 if not torch.isnan(phenotype_means[i]):

@@ -25,7 +25,6 @@ colorama==0.4.6
 configparser==3.8.1
 contextlib2==21.6.0
 contourpy==1.0.6
-cvnets @ file:///C:/Users/ASUS/OneDrive/Documents/Academia/University/Semester%208%20%28Tugas%20Akhir%29/Thesis/lettuce-model-dl/ml-cvnets
 cycler==0.12.1
 Cython==0.29.28
 dnspython==2.6.1

@@ -4,6 +4,8 @@ from typing import Tuple, List
 
 import cv2
 import torch
+from torch import Tensor
+
 import transforms as reference_transforms
 
 import albumentations as A
@@ -160,7 +162,7 @@ class DetectionPresetTrainAlbumentation:
 
 
 class DetectionPresetLettuceRGBD:
-    def __init__(self, is_train: bool, no_aug: bool, phenotype_means: List[float], phenotype_stds: List[float], log_transform):
+    def __init__(self, is_train: bool, no_aug: bool, phenotype_means: Tensor, phenotype_stds: Tensor, log_transform):
         T, tv_tensors = get_modules(True)
 
         self.transforms = T.Compose([
@@ -178,12 +180,8 @@ class DetectionPresetLettuceRGBD:
             T.ToPureTensor(),
         ])
 
-        if phenotype_means is None:
-            phenotype_means = [0.0, 0.0]
-        if phenotype_stds is None:
-            phenotype_stds = [1.0, 1.0]
-        self.phenotype_means = torch.tensor(phenotype_means).unsqueeze(0)
-        self.phenotype_stds = torch.tensor(phenotype_stds).unsqueeze(0)
+        self.phenotype_means = phenotype_means
+        self.phenotype_stds = phenotype_stds
 
         self.is_train = is_train
 
