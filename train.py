@@ -12,6 +12,7 @@ import torchvision
 import torchvision.ops._utils
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
+from ray import tune
 
 import custom_types
 from coco_eval import CocoEvaluator
@@ -205,6 +206,8 @@ def get_args_parser(add_help=True):
 
     parser.add_argument("--log-transform", action="store_true")
 
+    parser.add_argument("--tuning", action="store_true")
+
     return parser
 
 
@@ -271,7 +274,11 @@ def save_evaluator_summary(evaluator: CocoEvaluator, output_path: str):
             evaluator.summarize()
 
 
-def k_fold_training(args, num_classes, full_dataset, device):
+def k_fold_training(args, num_classes, full_dataset):
+    init_dist_args(args)
+
+    device = torch.device(args.device)
+
     kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=96)
 
     fold_results = [None] * args.k_folds
@@ -628,7 +635,25 @@ def k_fold_training(args, num_classes, full_dataset, device):
         print("No Phenotype metrics collected from K-Folds.")
 
 
-def standard_training(args, num_classes, dataset, dataset_test, device):
+def standard_training(args):
+    config = {
+        "lr": tune.grid_search([0.00009, 0.001]),
+        "phenotype_loss_weight": tune.grid_search([0.1, 0.9]),
+    }
+
+    if args.tuning:
+        tuner = tune.with_parameters(standard_training_impl, args=args)
+        tune.run(tuner, config=config, num_samples=10)
+    else:
+        standard_training_impl(config, args)
+
+
+# gak bisa dipake dgn ray tune
+def standard_training_impl(config, args):
+    init_dist_args(args)
+
+    device = torch.device(args.device)
+
     print("Creating model")
     kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
     if args.data_augmentation in ["multiscale", "lsj"]:
@@ -636,6 +661,20 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
     if "rcnn" in args.model:
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
+    if args.phenotype_loss_weight:
+        kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
+    if args.phenotype_means:
+        kwargs["phenotype_means"] = args.phenotype_means
+    if args.phenotype_stds:
+        kwargs["phenotype_stds"] = args.phenotype_stds
+    if args.log_transform:
+        kwargs["log_transform"] = args.log_transform
+
+    args.phenotype_means = torch.Tensor(args.phenotype_means).unsqueeze(0)
+    args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
+
+    dataset, num_classes = get_dataset(is_train=True, args=args)
+    dataset_test, _ = get_dataset(is_train=False, args=args)
 
     model = get_model(args.model, num_classes=num_classes, **kwargs)
 
@@ -710,6 +749,24 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
 
         train_collate_fn = copypaste_collate_fn
 
+    # # Kalkulasi untuk subset Latih (Train)
+    # if not args.test_only:
+    #     print(f"Calculating phenotype statistics")
+    #
+    #     phenotype_means, phenotype_stds = calculate_phenotype_stats(dataset, args.phenotype_names,
+    #                                                                 args.log_transform)
+    #     for i, name in enumerate(args.phenotype_names):
+    #         # Cek jika kalkulasi valid (bukan NaN)
+    #         if not torch.isnan(phenotype_means[i]):
+    #             print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
+    #         else:
+    #             print(f"    - {name}: No phenotype data found.")
+    #
+    #     args.phenotype_means = phenotype_means
+    #     args.phenotype_stds = phenotype_stds
+    #
+    # train_dataset_for_loader = custom_types.TransformedSet(train_sampler, get_transform(is_train=True, args=args))
+
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_sampler=train_batch_sampler, num_workers=args.workers,
         collate_fn=train_collate_fn)
@@ -718,6 +775,12 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
         dataset_test, batch_size=1,
         sampler=test_sampler, num_workers=args.workers,
         collate_fn=train_collate_fn)
+
+    # if not args.test_only:
+    #     if hasattr(model, "phenotype_means"):
+    #         model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
+    #     if hasattr(model, "phenotype_stds"):
+    #         model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
     model_without_ddp = model
     if args.distributed:
@@ -765,7 +828,7 @@ def standard_training(args, num_classes, dataset, dataset_test, device):
     print(f"Training time {total_time_str}")
 
 
-def main(args):
+def args_sanity_check(args):
     if args.backend.lower() == "tv_tensor" and not args.use_v2:
         raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
     if args.dataset not in ("coco", "coco_kp", "coco_online", "lettuce_rgbd", "lettuce_rgbd_no_h"):
@@ -778,13 +841,18 @@ def main(args):
     if args.output_dir:
         utils.mkdir(args.output_dir)
 
-    utils.init_distributed_mode(args)
     print(args)
 
-    device = torch.device(args.device)
+
+def init_dist_args(args):
+    utils.init_distributed_mode(args)
 
     if args.use_deterministic_algorithms:
         torch.use_deterministic_algorithms(True)
+
+
+def main(args):
+    args_sanity_check(args)
 
     # Data loading code
     print("Loading data")
@@ -792,11 +860,9 @@ def main(args):
     if args.k_folds > 1:
         # is_train is ignored
         dataset, num_classes = get_dataset(is_train=True, args=args, no_transform=True)
-        k_fold_training(args, num_classes, dataset, device)
+        k_fold_training(args, num_classes, dataset)
     else:
-        dataset, num_classes = get_dataset(is_train=True, args=args)
-        dataset_test, _ = get_dataset(is_train=False, args=args)
-        standard_training(args, num_classes, dataset, dataset_test, device)
+        standard_training(args)
 
 
 if __name__ == "__main__":
