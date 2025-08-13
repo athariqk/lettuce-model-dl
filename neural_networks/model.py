@@ -375,6 +375,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 num_topk = _topk_min(score, self.topk_candidates, 0)
                 score, idxs = score.topk(num_topk)
                 box = box[idxs]
+                phenotype = phenotype[idxs]
 
                 # transform to original scale
                 if hasattr(self, "minimums") and hasattr(self, "maximums"):
