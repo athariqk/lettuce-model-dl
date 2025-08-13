@@ -55,7 +55,9 @@ def get_transform(is_train, args):
             no_aug=False,
             phenotype_means=args.phenotype_means,
             phenotype_stds=args.phenotype_stds,
-            log_transform=args.log_transform,
+            boxcox_lambdas=args.boxcox_lambdas,
+            minimums=args.minimums,
+            maximums=args.maximums,
         )
     elif args.data_augmentation == "lettuce_rgbd_noaug":
         return presets.DetectionPresetLettuceRGBD(
@@ -63,7 +65,9 @@ def get_transform(is_train, args):
             no_aug=True,
             phenotype_means=args.phenotype_means,
             phenotype_stds=args.phenotype_stds,
-            log_transform=args.log_transform,
+            boxcox_lambdas=args.boxcox_lambdas,
+            minimums=args.minimums,
+            maximums=args.maximums,
         )
 
     if is_train:
@@ -203,6 +207,9 @@ def get_args_parser(add_help=True):
     parser.add_argument("--phenotype-loss-weight", type=float)
     parser.add_argument("--phenotype-means", required=False, nargs="+", type=float)
     parser.add_argument("--phenotype-stds", required=False, nargs="+", type=float)
+    parser.add_argument("--boxcox-lambdas", required=False, nargs="+", type=float)
+    parser.add_argument("--minimums", required=False, nargs="+", type=float)
+    parser.add_argument("--maximums", required=False, nargs="+", type=float)
 
     parser.add_argument("--log-transform", action="store_true")
 
@@ -665,13 +672,18 @@ def standard_training_impl(config, args):
         kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
     if args.phenotype_means:
         kwargs["phenotype_means"] = args.phenotype_means
+        args.phenotype_means = torch.Tensor(args.phenotype_means).unsqueeze(0)
     if args.phenotype_stds:
         kwargs["phenotype_stds"] = args.phenotype_stds
+        args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
     if args.log_transform:
         kwargs["log_transform"] = args.log_transform
-
-    args.phenotype_means = torch.Tensor(args.phenotype_means).unsqueeze(0)
-    args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
+    if args.boxcox_lambdas:
+        kwargs["boxcox_lambdas"] = args.boxcox_lambdas # do the same for k-fold training
+    if args.minimums:
+        kwargs["minimums"] = args.minimums  # do the same for k-fold training
+    if args.maximums:
+        kwargs["maximums"] = args.maximums  # do the same for k-fold training
 
     dataset, num_classes = get_dataset(is_train=True, args=args)
     dataset_test, _ = get_dataset(is_train=False, args=args)

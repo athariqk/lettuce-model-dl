@@ -37,6 +37,9 @@ class Modified_SSDLiteMobileViT(nn.Module):
             image_std: Optional[List[float]] = None,
             phenotype_means: Optional[List[float]] = None,
             phenotype_stds: Optional[List[float]] = None,
+            boxcox_lambdas: Optional[List[float]] = None,
+            minimums: Optional[List[float]] = None,
+            maximums: Optional[List[float]] = None,
             score_thresh: float = 0.01,
             nms_thresh: float = 0.5,
             detections_per_img: int = 200,
@@ -45,7 +48,6 @@ class Modified_SSDLiteMobileViT(nn.Module):
             pretrained: str = None,
             phenotype_loss_weight: float = 0.0001,
             multimodal = False,
-            log_transform = False,
             **kwargs
     ):
         super().__init__()
@@ -77,6 +79,13 @@ class Modified_SSDLiteMobileViT(nn.Module):
         self.register_buffer("phenotype_stds", torch.Tensor(phenotype_stds).unsqueeze(0))
         self.register_buffer("phenotype_means", torch.Tensor(phenotype_means).unsqueeze(0))
 
+        if boxcox_lambdas is not None:
+            self.register_buffer("boxcox_lambdas", torch.Tensor(boxcox_lambdas).unsqueeze(0))
+        if minimums is not None:
+            self.register_buffer("minimums", torch.Tensor(minimums).unsqueeze(0))
+        if maximums is not None:
+            self.register_buffer("maximums", torch.Tensor(maximums).unsqueeze(0))
+
         self.proposal_matcher = SSDMatcher(iou_thresh)
         self.anchor_generator = DefaultBoxGenerator(aspect_ratios, min_ratio=0.1, max_ratio=1.05)
         self.box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
@@ -92,8 +101,6 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         self.phenotype_loss_weight = phenotype_loss_weight
         self.multimodal = multimodal
-
-        self.log_transform = log_transform
 
     # @torch.jit.unused
     def eager_outputs(
@@ -368,9 +375,12 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 num_topk = _topk_min(score, self.topk_candidates, 0)
                 score, idxs = score.topk(num_topk)
                 box = box[idxs]
-                phenotype = (phenotype[idxs] * self.phenotype_stds) + self.phenotype_means # denormalize
-                if self.log_transform:
-                    phenotype = torch.expm1(phenotype)
+
+                # transform to original scale
+                if hasattr(self, "minimums") and hasattr(self, "maximums"):
+                    phenotype = (phenotypes * (self.maximums - self.minimums)) + self.minimums  # min max scaling
+                if hasattr(self, "boxcox_lambdas"):
+                    phenotype = torch.pow(phenotype * self.boxcox_lambdas + 1, 1.0 / self.boxcox_lambdas)
 
                 image_boxes.append(box)
                 image_scores.append(score)

@@ -1,10 +1,9 @@
 from collections import defaultdict
 import functools
-from typing import Tuple, List
+from typing import Tuple
 
 import cv2
 import torch
-from torch import Tensor
 
 import transforms as reference_transforms
 
@@ -162,7 +161,7 @@ class DetectionPresetTrainAlbumentation:
 
 
 class DetectionPresetLettuceRGBD:
-    def __init__(self, is_train: bool, no_aug: bool, phenotype_means: Tensor, phenotype_stds: Tensor, log_transform):
+    def __init__(self, is_train: bool, no_aug: bool, phenotype_means, phenotype_stds, boxcox_lambdas, minimums, maximums):
         T, tv_tensors = get_modules(True)
 
         self.transforms = T.Compose([
@@ -180,12 +179,16 @@ class DetectionPresetLettuceRGBD:
             T.ToPureTensor(),
         ])
 
-        self.phenotype_means = phenotype_means
-        self.phenotype_stds = phenotype_stds
+        if phenotype_means is not None:
+            self.phenotype_means = phenotype_means
+        if phenotype_stds is not None:
+            self.phenotype_stds = phenotype_stds
+        if boxcox_lambdas is not None:
+            self.boxcox_lambdas =  torch.Tensor(boxcox_lambdas).unsqueeze(0)
+        self.minimums = torch.Tensor(minimums).unsqueeze(0)
+        self.maximums = torch.Tensor(maximums).unsqueeze(0)
 
         self.is_train = is_train
-
-        self.log_transform = log_transform
 
         # self.color_transforms = T.Compose([
         #     T.RandomPhotometricDistort(brightness=(0.5, 1.5),
@@ -199,11 +202,14 @@ class DetectionPresetLettuceRGBD:
 
         if self.is_train:
             phenotypes = target["phenotypes"]
-            if self.log_transform:
-                phenotypes = torch.log1p(phenotypes)
-            # this is possible by broadcasting
-            normalized_phenotypes = (phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
-            target["phenotypes"] = normalized_phenotypes
+            if hasattr(self, "boxcox_lambdas"):
+                # boxcox transform
+                phenotypes = (torch.pow(phenotypes, self.boxcox_lambdas) - 1) / self.boxcox_lambdas
+            if hasattr(self, "phenotype_means") and hasattr(self, "phenotype_stds"):
+                # this is possible by broadcasting
+                phenotypes = (phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
+            phenotypes = (phenotypes - self.minimums) / (self.maximums - self.minimums) # min max scaling
+            target["phenotypes"] = phenotypes
 
         if isinstance(img, list) and len(img) == 2:
             return DualTensor(data[0], data[1]), target
