@@ -204,14 +204,14 @@ class DetectionPresetLettuceRGBD:
 
         if self.is_train:
             phenotypes = target["phenotypes"]
+            if hasattr(self, "minimums") and hasattr(self, "maximums"):
+                phenotypes = (phenotypes - self.minimums) / (self.maximums - self.minimums) # min max scaling
             if hasattr(self, "boxcox_lambdas"):
                 # boxcox transform
                 phenotypes = (torch.pow(phenotypes, self.boxcox_lambdas) - 1) / self.boxcox_lambdas
             if hasattr(self, "phenotype_means") and hasattr(self, "phenotype_stds"):
                 # this is possible by broadcasting
                 phenotypes = (phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
-            if hasattr(self, "minimums") and hasattr(self, "maximums"):
-                phenotypes = (phenotypes - self.minimums) / (self.maximums - self.minimums) # min max scaling
             target["phenotypes"] = phenotypes
 
         if isinstance(img, list) and len(img) == 2:

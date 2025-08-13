@@ -378,12 +378,12 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 phenotype = phenotype[idxs]
 
                 # transform to original scale
+                if hasattr(self, "boxcox_lambdas"):
+                    phenotype = torch.pow(phenotype * self.boxcox_lambdas + 1, 1 / self.boxcox_lambdas)
                 if hasattr(self, "minimums") and hasattr(self, "maximums"):
                     phenotype = (phenotype * (self.maximums - self.minimums)) + self.minimums  # min max scaling
                 if hasattr(self, "phenotype_means") and hasattr(self, "phenotype_stds"):
                     phenotype = (phenotype * self.phenotype_stds) + self.phenotype_means
-                if hasattr(self, "boxcox_lambdas"):
-                    phenotype = torch.pow(phenotype * self.boxcox_lambdas + 1, 1.0 / self.boxcox_lambdas)
 
                 image_boxes.append(box)
                 image_scores.append(score)
