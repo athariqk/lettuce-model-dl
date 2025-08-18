@@ -251,6 +251,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
                     x
                 )
 
+        if self.model.fpn is not None:
+            # apply Feature Pyramid Network
+            end_points = self.model.fpn(end_points)
+
         return end_points
 
     def forward(

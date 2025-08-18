@@ -67,6 +67,7 @@ model:
     ssd:
       proj_channels: [512, 256, 256, 128, 128, 64]
       nms_iou_threshold: 0.5
+      use_fpn: true
   classification:
     name: "mobilevit_v2"
     mitv2:
