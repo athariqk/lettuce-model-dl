@@ -411,12 +411,18 @@ def k_fold_training(args, num_classes, full_dataset):
          # do the same for standard_training
         if args.phenotype_loss_weight:
             kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
-        # if args.phenotype_means:
-        #     kwargs["phenotype_means"] = args.phenotype_means
-        # if args.phenotype_stds:
-        #     kwargs["phenotype_stds"] = args.phenotype_stds
+        if args.phenotype_means:
+            kwargs["phenotype_means"] = args.phenotype_means
+        if args.phenotype_stds:
+            kwargs["phenotype_stds"] = args.phenotype_stds
         if args.log_transform:
             kwargs["log_transform"] = args.log_transform
+        if args.boxcox_lambdas:
+            kwargs["boxcox_lambdas"] = args.boxcox_lambdas
+        if args.minimums:
+            kwargs["minimums"] = args.minimums
+        if args.maximums:
+            kwargs["maximums"] = args.maximums
 
         model = get_model(args.model, num_classes=num_classes, **kwargs)
 
@@ -679,11 +685,11 @@ def standard_training_impl(config, args):
     if args.log_transform:
         kwargs["log_transform"] = args.log_transform
     if args.boxcox_lambdas:
-        kwargs["boxcox_lambdas"] = args.boxcox_lambdas # do the same for k-fold training
+        kwargs["boxcox_lambdas"] = args.boxcox_lambdas
     if args.minimums:
-        kwargs["minimums"] = args.minimums  # do the same for k-fold training
+        kwargs["minimums"] = args.minimums
     if args.maximums:
-        kwargs["maximums"] = args.maximums  # do the same for k-fold training
+        kwargs["maximums"] = args.maximums
 
     dataset, num_classes = get_dataset(is_train=True, args=args)
     dataset_test, _ = get_dataset(is_train=False, args=args)
