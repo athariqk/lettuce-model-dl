@@ -203,6 +203,10 @@ def get_args_parser(add_help=True):
     parser.add_argument("--k-folds", type=int, default=0,
                         help="Number of folds for K-Fold cross-validation. Set to 0 or 1 to disable K-Fold and use standard train/val split.")
 
+    # New argument for train-validation split
+    parser.add_argument("--val-split", type=float, default=None,
+                        help="Proportion of the training set to use for validation (e.g., 0.2). If set, it overrides the default train/val split behavior.")
+
     parser.add_argument("--phenotype-names", nargs="+", type=str)
     parser.add_argument("--phenotype-loss-weight", type=float)
     parser.add_argument("--phenotype-means", required=False, nargs="+", type=float)
@@ -667,6 +671,41 @@ def standard_training_impl(config, args):
 
     device = torch.device(args.device)
 
+    # --- START: MODIFICATION FOR TRAIN-VAL SPLIT ---
+
+    # Check if a validation split is requested from the command line arguments
+    if args.val_split and 0 < args.val_split < 1:
+        print(f"Train-validation split enabled. Using {args.val_split:.0%} of the data for validation.")
+
+        # 1. Load the full training dataset without applying transforms initially.
+        full_dataset, num_classes = get_dataset(is_train=True, args=args, no_transform=True)
+
+        # 2. Calculate the size of each split.
+        dataset_size = len(full_dataset)
+        val_size = int(args.val_split * dataset_size)
+        train_size = dataset_size - val_size
+        print(f"Splitting dataset: {train_size} training images, {val_size} validation images.")
+
+        # 3. Perform the random split using a fixed seed for reproducibility.
+        train_subset, val_subset = torch.utils.data.random_split(
+            full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(96)
+        )
+
+        # 4. Apply the correct transformations to each subset on-the-fly.
+        dataset = custom_types.TransformedSubset(
+            train_subset, get_transform(is_train=True, args=args)
+        )
+        dataset_test = custom_types.TransformedSubset(
+            val_subset, get_transform(is_train=False, args=args)
+        )
+    else:
+        # Original behavior: Load train and validation sets from separate sources.
+        print("Loading separate train and validation datasets.")
+        dataset, num_classes = get_dataset(is_train=True, args=args)
+        dataset_test, _ = get_dataset(is_train=False, args=args)
+
+    # --- END: MODIFICATION FOR TRAIN-VAL SPLIT ---
+
     print("Creating model")
     kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
     if args.data_augmentation in ["multiscale", "lsj"]:
@@ -690,9 +729,6 @@ def standard_training_impl(config, args):
         kwargs["minimums"] = args.minimums
     if args.maximums:
         kwargs["maximums"] = args.maximums
-
-    dataset, num_classes = get_dataset(is_train=True, args=args)
-    dataset_test, _ = get_dataset(is_train=False, args=args)
 
     model = get_model(args.model, num_classes=num_classes, **kwargs)
 
@@ -800,10 +836,6 @@ def standard_training_impl(config, args):
     #     if hasattr(model, "phenotype_stds"):
     #         model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
-    model_without_ddp = model
-    if args.distributed:
-        model_without_ddp = model.module
-
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model_without_ddp.load_state_dict(checkpoint["model"])
@@ -855,6 +887,8 @@ def args_sanity_check(args):
         raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")
     if args.dataset == "coco_kp" and args.use_v2:
         raise ValueError("KeyPoint detection doesn't support V2 transforms yet")
+    if args.val_split and (args.val_split <= 0 or args.val_split >= 1):
+        raise ValueError(f"--val-split must be between 0 and 1, but got {args.val_split}")
 
     if args.output_dir:
         utils.mkdir(args.output_dir)
