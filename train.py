@@ -671,6 +671,23 @@ def standard_training_impl(config, args):
 
     device = torch.device(args.device)
 
+    kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
+    if args.data_augmentation in ["multiscale", "lsj"]:
+        kwargs["_skip_resize"] = True
+    if "rcnn" in args.model:
+        if args.rpn_score_thresh is not None:
+            kwargs["rpn_score_thresh"] = args.rpn_score_thresh
+    if args.phenotype_loss_weight:
+        kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
+    if args.log_transform:
+        kwargs["log_transform"] = args.log_transform
+    if args.boxcox_lambdas:
+        kwargs["boxcox_lambdas"] = args.boxcox_lambdas
+    if args.minimums:
+        kwargs["minimums"] = args.minimums
+    if args.maximums:
+        kwargs["maximums"] = args.maximums
+
     # --- START: MODIFICATION FOR TRAIN-VAL SPLIT ---
 
     # Check if a validation split is requested from the command line arguments
@@ -718,31 +735,16 @@ def standard_training_impl(config, args):
         dataset, num_classes = get_dataset(is_train=True, args=args)
         dataset_test, _ = get_dataset(is_train=False, args=args)
 
+        if args.phenotype_means:
+            kwargs["phenotype_means"] = args.phenotype_means
+            args.phenotype_means = torch.Tensor(args.phenotype_means).unsqueeze(0)
+        if args.phenotype_stds:
+            kwargs["phenotype_stds"] = args.phenotype_stds
+            args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
+
     # --- END: MODIFICATION FOR TRAIN-VAL SPLIT ---
 
     print("Creating model")
-    kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
-    if args.data_augmentation in ["multiscale", "lsj"]:
-        kwargs["_skip_resize"] = True
-    if "rcnn" in args.model:
-        if args.rpn_score_thresh is not None:
-            kwargs["rpn_score_thresh"] = args.rpn_score_thresh
-    if args.phenotype_loss_weight:
-        kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
-    if args.phenotype_means:
-        kwargs["phenotype_means"] = args.phenotype_means
-        args.phenotype_means = torch.Tensor(args.phenotype_means).unsqueeze(0)
-    if args.phenotype_stds:
-        kwargs["phenotype_stds"] = args.phenotype_stds
-        args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
-    if args.log_transform:
-        kwargs["log_transform"] = args.log_transform
-    if args.boxcox_lambdas:
-        kwargs["boxcox_lambdas"] = args.boxcox_lambdas
-    if args.minimums:
-        kwargs["minimums"] = args.minimums
-    if args.maximums:
-        kwargs["maximums"] = args.maximums
 
     model = get_model(args.model, num_classes=num_classes, **kwargs)
 
