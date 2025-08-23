@@ -691,7 +691,21 @@ def standard_training_impl(config, args):
             full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(96)
         )
 
-        # 4. Apply the correct transformations to each subset on-the-fly.
+        # 4. Calculate phenotype statistics on the training subset before applying augmentations.
+        if not args.test_only:
+            print("-" * 50)
+            print(f"Calculating phenotype statistics for the training split:")
+            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names,
+                                                                        args.log_transform)
+            for i, name in enumerate(args.phenotype_names):
+                if not torch.isnan(phenotype_means[i]):
+                    print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
+                else:
+                    print(f"    - {name}: No phenotype data found.")
+            args.phenotype_means = phenotype_means
+            args.phenotype_stds = phenotype_stds
+
+        # 5. Apply the correct transformations to each subset on-the-fly.
         dataset = custom_types.TransformedSubset(
             train_subset, get_transform(is_train=True, args=args)
         )
