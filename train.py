@@ -33,6 +33,12 @@ def copypaste_collate_fn(batch):
     return copypaste(*utils.collate_fn(batch))
 
 
+# A simple collate function that only extracts the target from each dataset item.
+# This avoids trying to stack images and deals with variable-sized tensors in targets.
+def collate_targets_only(batch):
+    return [item[1] for item in batch]
+
+
 def get_dataset(is_train, args, no_transform: bool = False):
     image_set = "train" if is_train else "val"
     paths = {
@@ -44,7 +50,8 @@ def get_dataset(is_train, args, no_transform: bool = False):
     }
     p, ds_fn, num_classes = paths[args.dataset]
 
-    ds = ds_fn(p, image_set=image_set, transforms=None if no_transform else get_transform(is_train, args), use_v2=args.use_v2)
+    ds = ds_fn(p, image_set=image_set, transforms=None if no_transform else get_transform(is_train, args),
+               use_v2=args.use_v2)
     return ds, num_classes
 
 
@@ -222,49 +229,46 @@ def get_args_parser(add_help=True):
     return parser
 
 
-def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: List[str], log_transform: bool) -> Tuple[
-    torch.Tensor, torch.Tensor]:
+def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: List[str], log_transform: bool,
+                              num_workers: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Menghitung mean dan standar deviasi untuk target fenotipe dalam sebuah subset dataset.
-    Secara opsional menerapkan transformasi log (log1p) sebelum kalkulasi.
+    Calculates the mean and standard deviation for phenotype targets in a dataset subset.
+    Uses a DataLoader to speed up the process by parallelizing data loading.
 
     Args:
-        subset (torch.utils.data.Subset): Subset data (latih atau uji).
-        phenotype_names (List[str]): Daftar nama fenotipe yang akan dianalisis.
-        log_transform (bool): Jika True, terapkan transformasi log (log1p) ke nilai fenotipe.
+        subset (torch.utils.data.Subset): The data subset (train or test).
+        phenotype_names (List[str]): List of phenotype names to analyze.
+        log_transform (bool): If True, applies a log transformation (log1p) to phenotype values.
+        num_workers (int): The number of worker processes to use for data loading.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: Sebuah tuple berisi (mean, std_dev) untuk setiap fenotipe.
+        A tuple containing (mean, std_dev) for each phenotype.
     """
     all_phenotypes = []
-    # 'subset.dataset' mengakses dataset asli (full_dataset) yang dibungkus oleh Subset
-    original_dataset = subset.dataset
 
-    # Iterasi melalui indeks yang ada di dalam subset
-    for idx in subset.indices:
-        # Memanggil __getitem__ dari dataset asli untuk mendapatkan data yang sudah diproses
-        # Ini akan memanggil _load_image_pair, _load_target, dan wrap_to_tv2
-        _, target = original_dataset[idx]
+    # Create a DataLoader to fetch data in parallel.
+    # We iterate over the original dataset (wrapped by the subset) to avoid loading augmented data.
+    data_loader = torch.utils.data.DataLoader(
+        subset,
+        batch_size=32,  # A larger batch size is fine as we are not using GPU memory here.
+        num_workers=num_workers,
+        collate_fn=collate_targets_only,
+        persistent_workers=True if num_workers > 0 else False
+    )
 
-        # Periksa apakah target fenotipe ada dan tidak kosong
-        if "phenotypes" in target and target["phenotypes"].numel() > 0:
-            phenotypes = target["phenotypes"]
-            if log_transform:
-                # Gunakan log1p untuk stabilitas numerik dan menangani nilai 0
-                # log1p(x) = log(1 + x)
-                phenotypes = torch.log1p(phenotypes)
-            all_phenotypes.append(phenotypes)
+    for targets_batch in data_loader:
+        for target in targets_batch:
+            if "phenotypes" in target and target["phenotypes"].numel() > 0:
+                phenotypes = target["phenotypes"]
+                if log_transform:
+                    phenotypes = torch.log1p(phenotypes)
+                all_phenotypes.append(phenotypes)
 
     if not all_phenotypes:
-        # Jika tidak ada data fenotipe, kembalikan tensor kosong
         num_phenotypes = len(phenotype_names)
         return torch.full((num_phenotypes,), float('nan')), torch.full((num_phenotypes,), float('nan'))
 
-    # Gabungkan semua tensor fenotipe menjadi satu tensor besar
     combined_phenotypes = torch.cat(all_phenotypes, dim=0)
-
-    # Kalkulasi mean dan standar deviasi untuk setiap kolom (setiap fenotipe)
-    # dim=0 karena kita menghitung statistik per fenotipe
     mean = torch.mean(combined_phenotypes, dim=0)
     std_dev = torch.std(combined_phenotypes, dim=0)
 
@@ -352,7 +356,8 @@ def k_fold_training(args, num_classes, full_dataset):
             print("-" * 50)
             print(f"Calculating phenotype statistics for Fold {fold + 1}:")
 
-            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names, args.log_transform)
+            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names,
+                                                                        args.log_transform, args.workers)
             for i, name in enumerate(args.phenotype_names):
                 # Cek jika kalkulasi valid (bukan NaN)
                 if not torch.isnan(phenotype_means[i]):
@@ -398,7 +403,8 @@ def k_fold_training(args, num_classes, full_dataset):
             collate_fn=train_collate_fn_fold
         )
         data_loader_test = torch.utils.data.DataLoader(
-            test_dataset_for_loader, batch_size=1, sampler=test_sampler, num_workers=args.workers, collate_fn=utils.collate_fn
+            test_dataset_for_loader, batch_size=1, sampler=test_sampler, num_workers=args.workers,
+            collate_fn=utils.collate_fn
             # Standard collate for eval
         )
 
@@ -412,13 +418,13 @@ def k_fold_training(args, num_classes, full_dataset):
             if args.rpn_score_thresh is not None:
                 kwargs["rpn_score_thresh"] = args.rpn_score_thresh
         kwargs["device"] = device
-         # do the same for standard_training
+        # do the same for standard_training
         if args.phenotype_loss_weight:
             kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
-        if args.phenotype_means:
-            kwargs["phenotype_means"] = args.phenotype_means
-        if args.phenotype_stds:
-            kwargs["phenotype_stds"] = args.phenotype_stds
+        # if args.phenotype_means:
+        #     kwargs["phenotype_means"] = args.phenotype_means
+        # if args.phenotype_stds:
+        #     kwargs["phenotype_stds"] = args.phenotype_stds
         if args.log_transform:
             kwargs["log_transform"] = args.log_transform
         if args.boxcox_lambdas:
@@ -528,7 +534,8 @@ def k_fold_training(args, num_classes, full_dataset):
                 utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
 
             # evaluate after every epoch
-            evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
+            evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device,
+                                                phenotype_names=args.phenotype_names)
             last_epoch_evaluator = evaluator
 
             if evaluator and evaluator.iou_types:
@@ -713,7 +720,7 @@ def standard_training_impl(config, args):
             print("-" * 50)
             print(f"Calculating phenotype statistics for the training split:")
             phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names,
-                                                                        args.log_transform)
+                                                                        args.log_transform, args.workers)
             for i, name in enumerate(args.phenotype_names):
                 if not torch.isnan(phenotype_means[i]):
                     print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
@@ -752,6 +759,12 @@ def standard_training_impl(config, args):
         print("Loading saved weights: {}".format(args.saved_weights))
         weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
         model.load_state_dict(weights)
+
+    if not args.test_only:
+        if hasattr(model, "phenotype_means"):
+            model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
+        if hasattr(model, "phenotype_stds"):
+            model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
     model.to(device)
     if args.distributed and args.sync_bn:
