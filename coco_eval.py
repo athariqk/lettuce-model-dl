@@ -209,7 +209,6 @@ class CocoEvaluator:
         #     print(
         #         f"DEBUG_PRINT: Skipping phenotype matching block because self.phenotype_names is falsy or targets_for_pheno is not provided.")
 
-
     def synchronize_between_processes(self):
         # Synchronize standard COCO eval images
         for iou_type in self.iou_types:
@@ -267,7 +266,8 @@ class CocoEvaluator:
             print("Phenotype Regression Metrics (for this fold/evaluation run):")
             print("  Not enough matched ground truth or prediction phenotype data to calculate metrics.")
             for name in self.phenotype_names:  # Ensure dict has keys even if no data
-                self.phenotype_metrics_results[name] = {'r2': np.nan, 'rmse': np.nan, 'mape': np.nan, 'nrmse': np.nan}
+                self.phenotype_metrics_results[name] = {'r2': np.nan, 'rmse': np.nan, 'mape': np.nan, 'nrmse': np.nan,
+                                                        'mbe': np.nan}
 
     def _calculate_and_print_phenotype_metrics(self):
         """Helper function to calculate and print phenotype regression metrics."""
@@ -275,7 +275,8 @@ class CocoEvaluator:
 
         # Initialize all phenotype metrics to NaN
         for name in self.phenotype_names:
-            self.phenotype_metrics_results[name] = {'r2': np.nan, 'rmse': np.nan, 'mape': np.nan, 'nrmse': np.nan}
+            self.phenotype_metrics_results[name] = {'r2': np.nan, 'rmse': np.nan, 'mape': np.nan, 'nrmse': np.nan,
+                                                    'mbe': np.nan}
 
         try:
             all_gt_phenotypes_np = np.array(self.all_gt_phenotypes)
@@ -335,13 +336,30 @@ class CocoEvaluator:
                             mape = np.nan
                         nrmse = rmse / gt_std
 
-                        self.phenotype_metrics_results[name]['r2'] = r2
-                        self.phenotype_metrics_results[name]['rmse'] = rmse
-                        self.phenotype_metrics_results[name]['mape'] = mape
-                        self.phenotype_metrics_results[name]['nrmse'] = nrmse
+                        # Calculate Mean Bias Error (MBE)
+                        mbe = np.mean(pred_values - gt_values)
+                        bias_desc = " (balanced)"
+                        # Use a small threshold relative to std dev to determine bias
+                        if mbe > 0.01 * gt_std:
+                            bias_desc = " (over-forecasts)"
+                        elif mbe < -0.01 * gt_std:
+                            bias_desc = " (under-forecasts)"
+
+                        self.phenotype_metrics_results[name] = {
+                            'r2': r2,
+                            'rmse': rmse,
+                            'mape': mape,
+                            'nrmse': nrmse,
+                            'mbe': mbe
+                        }
 
                         print(
-                            f"  {name:<20} R-squared: {r2:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}, NRMSE (std): {nrmse:.4f}")
+                            f"  {name:<20} R-squared: {r2:.4f}, RMSE: {rmse:.4f}, MAPE: {mape:.2f}, NRMSE (std): {nrmse:.4f}"
+                        )
+                        print(
+                            f"  {'':<22} Mean Bias Error: {mbe:.4f}{bias_desc}"
+                        )
+
                     except Exception as e:
                         print(f"  {name:<20} Error calculating metrics for this phenotype: {e}")
                 else:
@@ -468,7 +486,7 @@ def merge(img_ids, eval_imgs):
         return merged_img_ids_np, np.array([])
     try:
         merged_eval_imgs_np = np.concatenate(merged_eval_imgs, axis=2)
-    except ValueError: # Ensure robust concatenation even if one list is empty or shapes differ
+    except ValueError:  # Ensure robust concatenation even if one list is empty or shapes differ
         # Fallback: if concatenation fails, attempt to filter and process what's available
         # This might indicate an issue, but we try to proceed if possible.
         # A more robust solution might involve padding or careful pre-checking of shapes.
@@ -476,23 +494,25 @@ def merge(img_ids, eval_imgs):
         # A simple case: if only one process contributes, no concatenation is needed.
         if len(merged_eval_imgs) == 1:
             merged_eval_imgs_np = merged_eval_imgs[0]
-        else: # Attempt to concatenate valid arrays if some are empty
+        else:  # Attempt to concatenate valid arrays if some are empty
             valid_arrays = [arr for arr in merged_eval_imgs if arr.size > 0]
-            if not valid_arrays: merged_eval_imgs_np = np.array([])
-            elif len(valid_arrays) == 1: merged_eval_imgs_np = valid_arrays[0]
-            else: merged_eval_imgs_np = np.concatenate(valid_arrays, axis=2)
-
+            if not valid_arrays:
+                merged_eval_imgs_np = np.array([])
+            elif len(valid_arrays) == 1:
+                merged_eval_imgs_np = valid_arrays[0]
+            else:
+                merged_eval_imgs_np = np.concatenate(valid_arrays, axis=2)
 
     unique_merged_img_ids, idx = np.unique(merged_img_ids_np, return_index=True)
     if merged_eval_imgs_np.size > 0:
         # Ensure idx is not out of bounds for the possibly altered merged_eval_imgs_np
         # This requires merged_eval_imgs_np to have its 3rd dimension correspond to original merged_img_ids order
         # If concatenation strategy changed, this indexing might need review. Assuming original intent holds.
-        if merged_eval_imgs_np.shape[2] == len(merged_img_ids_np): # Check if 3rd dim matches original merged ids count
-             merged_eval_imgs_filtered = merged_eval_imgs_np[..., idx]
-        else: # If dimensions don't match up after a fallback concatenation, this filtering is unsafe.
+        if merged_eval_imgs_np.shape[2] == len(merged_img_ids_np):  # Check if 3rd dim matches original merged ids count
+            merged_eval_imgs_filtered = merged_eval_imgs_np[..., idx]
+        else:  # If dimensions don't match up after a fallback concatenation, this filtering is unsafe.
             # print("Warning: Dimension mismatch in merge after eval_imgs concatenation. Results may be compromised.")
-            merged_eval_imgs_filtered = np.array([]) # Or handle error more gracefully
+            merged_eval_imgs_filtered = np.array([])  # Or handle error more gracefully
     else:
         merged_eval_imgs_filtered = np.array([])
     return unique_merged_img_ids, merged_eval_imgs_filtered
