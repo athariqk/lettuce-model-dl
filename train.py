@@ -230,9 +230,9 @@ def get_args_parser(add_help=True):
 
 
 def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: List[str], log_transform: bool,
-                              num_workers: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                              num_workers: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Calculates the mean and standard deviation for phenotype targets in a dataset subset.
+    Calculates the mean, std, min, and max for phenotype targets in a dataset subset.
     Uses a DataLoader to speed up the process by parallelizing data loading.
 
     Args:
@@ -242,7 +242,7 @@ def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: 
         num_workers (int): The number of worker processes to use for data loading.
 
     Returns:
-        A tuple containing (mean, std_dev) for each phenotype.
+        A tuple containing (mean, std_dev, mins, maxs) for each phenotype.
     """
     all_phenotypes = []
 
@@ -266,13 +266,16 @@ def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: 
 
     if not all_phenotypes:
         num_phenotypes = len(phenotype_names)
-        return torch.full((num_phenotypes,), float('nan')), torch.full((num_phenotypes,), float('nan'))
+        nan_tensor = torch.full((num_phenotypes,), float('nan'))
+        return nan_tensor, nan_tensor, nan_tensor, nan_tensor
 
     combined_phenotypes = torch.cat(all_phenotypes, dim=0)
     mean = torch.mean(combined_phenotypes, dim=0)
     std_dev = torch.std(combined_phenotypes, dim=0)
+    mins = torch.min(combined_phenotypes, dim=0).values
+    maxs = torch.max(combined_phenotypes, dim=0).values
 
-    return mean, std_dev
+    return mean, std_dev, mins, maxs
 
 
 def save_evaluator_summary(evaluator: CocoEvaluator, output_path: str):
@@ -294,7 +297,7 @@ def k_fold_training(args, num_classes, full_dataset):
 
     device = torch.device(args.device)
 
-    kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=96)
+    kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=10)
 
     fold_results = [None] * args.k_folds
     fold_phenotype_metrics = [None] * args.k_folds
@@ -356,17 +359,19 @@ def k_fold_training(args, num_classes, full_dataset):
             print("-" * 50)
             print(f"Calculating phenotype statistics for Fold {fold + 1}:")
 
-            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names,
+            phenotype_means, phenotype_stds, phenotype_mins, phenotype_maxs = calculate_phenotype_stats(train_subset, args.phenotype_names,
                                                                         args.log_transform, args.workers)
             for i, name in enumerate(args.phenotype_names):
                 # Cek jika kalkulasi valid (bukan NaN)
                 if not torch.isnan(phenotype_means[i]):
-                    print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
+                    print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}, Min = {phenotype_mins[i]:.4f}, Max = {phenotype_maxs[i]:.4f}")
                 else:
                     print(f"    - {name}: No phenotype data found.")
 
             args.phenotype_means = phenotype_means
             args.phenotype_stds = phenotype_stds
+            args.minimums = phenotype_mins
+            args.maximums = phenotype_maxs
 
         train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
         test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
@@ -717,17 +722,36 @@ def standard_training_impl(config, args):
 
         # 4. Calculate phenotype statistics on the training subset before applying augmentations.
         if not args.test_only:
-            print("-" * 50)
-            print(f"Calculating phenotype statistics for the training split:")
-            phenotype_means, phenotype_stds = calculate_phenotype_stats(train_subset, args.phenotype_names,
-                                                                        args.log_transform, args.workers)
+            # If stats arguments are not provided, calculate them from the training subset.
+            if args.phenotype_means is None or args.phenotype_stds is None or args.minimums is None or args.maximums is None:
+                print("-" * 50)
+                print("Calculating phenotype statistics for the training split (means, stds, mins, maxs)...")
+                phenotype_means, phenotype_stds, phenotype_mins, phenotype_maxs = calculate_phenotype_stats(
+                    train_subset, args.phenotype_names, args.log_transform, args.workers
+                )
+                # Assign calculated values to args
+                args.phenotype_means = phenotype_means
+                args.phenotype_stds = phenotype_stds
+                args.minimums = phenotype_mins
+                args.maximums = phenotype_maxs
+            else:
+                print("-" * 50)
+                print("Using user-provided phenotype statistics (means, stds, mins, maxs).")
+                # Ensure provided stats are tensors for consistency
+                args.phenotype_means = torch.as_tensor(args.phenotype_means, dtype=torch.float32)
+                args.phenotype_stds = torch.as_tensor(args.phenotype_stds, dtype=torch.float32)
+                args.minimums = torch.as_tensor(args.minimums, dtype=torch.float32)
+                args.maximums = torch.as_tensor(args.maximums, dtype=torch.float32)
+
+            # Print the final statistics being used for the training run
+            print("Phenotype statistics in use for this run:")
             for i, name in enumerate(args.phenotype_names):
-                if not torch.isnan(phenotype_means[i]):
-                    print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
+                # Check if calculation was valid (not NaN)
+                if not torch.isnan(args.phenotype_means[i]):
+                    print(f"    - {name}: Mean={args.phenotype_means[i]:.4f}, Std={args.phenotype_stds[i]:.4f}, Min={args.minimums[i]:.4f}, Max={args.maximums[i]:.4f}")
                 else:
                     print(f"    - {name}: No phenotype data found.")
-            args.phenotype_means = phenotype_means
-            args.phenotype_stds = phenotype_stds
+
 
         # 5. Apply the correct transformations to each subset on-the-fly.
         dataset = custom_types.TransformedSubset(
@@ -761,10 +785,12 @@ def standard_training_impl(config, args):
         model.load_state_dict(weights)
 
     if not args.test_only:
-        if hasattr(model, "phenotype_means"):
-            model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
-        if hasattr(model, "phenotype_stds"):
-            model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
+        # Ensure args.phenotype_means/stds exist and are tensors before assigning to model
+        if hasattr(model, "phenotype_means") and args.phenotype_means is not None:
+            model.phenotype_means = torch.as_tensor(args.phenotype_means).unsqueeze(0).type_as(model.phenotype_means)
+        if hasattr(model, "phenotype_stds") and args.phenotype_stds is not None:
+            model.phenotype_stds = torch.as_tensor(args.phenotype_stds).unsqueeze(0).type_as(model.phenotype_stds)
+
 
     model.to(device)
     if args.distributed and args.sync_bn:
