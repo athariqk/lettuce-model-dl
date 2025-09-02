@@ -51,7 +51,7 @@ def get_dataset(is_train, args, no_transform: bool = False):
     p, ds_fn, num_classes = paths[args.dataset]
 
     ds = ds_fn(p, image_set=image_set, transforms=None if no_transform else get_transform(is_train, args),
-               use_v2=args.use_v2)
+               use_v2=args.use_v2, phenotype_names=args.phenotype_names)
     return ds, num_classes
 
 
@@ -222,6 +222,16 @@ def get_args_parser(add_help=True):
     parser.add_argument("--minimums", required=False, nargs="+", type=float)
     parser.add_argument("--maximums", required=False, nargs="+", type=float)
 
+    # Arguments to skip phenotype calculations
+    parser.add_argument("--skip-mean-calc", action="store_true",
+                        help="Skips on-the-fly calculation of phenotype means.")
+    parser.add_argument("--skip-std-calc", action="store_true",
+                        help="Skips on-the-fly calculation of phenotype standard deviations.")
+    parser.add_argument("--skip-min-calc", action="store_true",
+                        help="Skips on-the-fly calculation of phenotype minimums.")
+    parser.add_argument("--skip-max-calc", action="store_true",
+                        help="Skips on-the-fly calculation of phenotype maximums.")
+
     parser.add_argument("--log-transform", action="store_true")
 
     parser.add_argument("--tuning", action="store_true")
@@ -230,7 +240,8 @@ def get_args_parser(add_help=True):
 
 
 def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: List[str], log_transform: bool,
-                              num_workers: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                              num_workers: int, args) -> Tuple[
+    torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     """
     Calculates the mean, std, min, and max for phenotype targets in a dataset subset.
     Uses a DataLoader to speed up the process by parallelizing data loading.
@@ -240,17 +251,16 @@ def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: 
         phenotype_names (List[str]): List of phenotype names to analyze.
         log_transform (bool): If True, applies a log transformation (log1p) to phenotype values.
         num_workers (int): The number of worker processes to use for data loading.
+        args: Command line arguments to check which calculations to skip.
 
     Returns:
-        A tuple containing (mean, std_dev, mins, maxs) for each phenotype.
+        A tuple containing (mean, std_dev, mins, maxs) for each phenotype. Uncalculated values will be None.
     """
     all_phenotypes = []
 
-    # Create a DataLoader to fetch data in parallel.
-    # We iterate over the original dataset (wrapped by the subset) to avoid loading augmented data.
     data_loader = torch.utils.data.DataLoader(
         subset,
-        batch_size=32,  # A larger batch size is fine as we are not using GPU memory here.
+        batch_size=32,
         num_workers=num_workers,
         collate_fn=collate_targets_only,
         persistent_workers=True if num_workers > 0 else False
@@ -265,15 +275,14 @@ def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: 
                 all_phenotypes.append(phenotypes)
 
     if not all_phenotypes:
-        num_phenotypes = len(phenotype_names)
-        nan_tensor = torch.full((num_phenotypes,), float('nan'))
-        return nan_tensor, nan_tensor, nan_tensor, nan_tensor
+        return None, None, None, None
 
     combined_phenotypes = torch.cat(all_phenotypes, dim=0)
-    mean = torch.mean(combined_phenotypes, dim=0)
-    std_dev = torch.std(combined_phenotypes, dim=0)
-    mins = torch.min(combined_phenotypes, dim=0).values
-    maxs = torch.max(combined_phenotypes, dim=0).values
+
+    mean = torch.mean(combined_phenotypes, dim=0) if not args.skip_mean_calc else None
+    std_dev = torch.std(combined_phenotypes, dim=0) if not args.skip_std_calc else None
+    mins = torch.min(combined_phenotypes, dim=0).values if not args.skip_min_calc else None
+    maxs = torch.max(combined_phenotypes, dim=0).values if not args.skip_max_calc else None
 
     return mean, std_dev, mins, maxs
 
@@ -288,7 +297,6 @@ def save_evaluator_summary(evaluator: CocoEvaluator, output_path: str):
     print(f"Saving evaluation summary to {output_path}")
     with open(output_path, "w") as f:
         with redirect_stdout(f):
-            # The summarize method prints the results.
             evaluator.summarize()
 
 
@@ -304,34 +312,25 @@ def k_fold_training(args, num_classes, full_dataset):
     resume_fold_idx = -1
 
     if args.resume_kfold:
-        # Check folders backwards to find the last one with a checkpoint
         for i in range(args.k_folds, 0, -1):
             fold_dir = os.path.join(args.output_dir, f"fold_{i}")
             checkpoint_path = os.path.join(fold_dir, "checkpoint.pth")
             if os.path.exists(checkpoint_path):
                 chkpt = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
-                # Check if the fold was completed
                 if chkpt["epoch"] == args.epochs - 1:
-                    # This fold finished, so we resume from the *next* fold
                     resume_fold_idx = i
                 else:
-                    # This fold was interrupted, so we resume *this* fold
                     resume_fold_idx = i - 1
                 break
         if resume_fold_idx != -1:
-            # If we are resuming from the next fold, the index is correct.
-            # If we are resuming from an incomplete fold, the index is also correct.
-            # E.g., if fold 3 (index 2) is incomplete, resume_fold_idx is 2. The loop will skip 0, 1.
             print(f"--- Resuming K-Fold training. Starting from Fold {resume_fold_idx + 1} ---")
         else:
             print("--- --resume-kfold specified, but no checkpoints found. Starting from scratch. ---")
 
     print(f"Starting {args.k_folds}-Fold Cross-Validation")
     for fold, (train_idx, test_idx) in enumerate(kf.split(full_dataset)):
-        # Logic to skip completed folds.
         if fold < resume_fold_idx:
             print(f"--- Skipping completed Fold {fold + 1} ---")
-            # Load the saved numerical results for this skipped fold to ensure correct final averaging
             fold_dir = os.path.join(args.output_dir, f"fold_{fold + 1}")
             results_path = os.path.join(fold_dir, "fold_results.npz")
             if os.path.exists(results_path):
@@ -354,30 +353,35 @@ def k_fold_training(args, num_classes, full_dataset):
         train_subset = torch.utils.data.Subset(full_dataset, train_idx)
         test_subset = torch.utils.data.Subset(full_dataset, test_idx)
 
-        # Kalkulasi untuk subset Latih (Train)
         if not args.test_only:
             print("-" * 50)
-            print(f"Calculating phenotype statistics for Fold {fold + 1}:")
+            print(f"Handling phenotype statistics for Fold {fold + 1}:")
 
-            phenotype_means, phenotype_stds, phenotype_mins, phenotype_maxs = calculate_phenotype_stats(train_subset, args.phenotype_names,
-                                                                        args.log_transform, args.workers)
-            for i, name in enumerate(args.phenotype_names):
-                # Cek jika kalkulasi valid (bukan NaN)
-                if not torch.isnan(phenotype_means[i]):
-                    print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}, Min = {phenotype_mins[i]:.4f}, Max = {phenotype_maxs[i]:.4f}")
-                else:
-                    print(f"    - {name}: No phenotype data found.")
+            # Reset stats for the fold to avoid carry-over
+            args.phenotype_means, args.phenotype_stds, args.minimums, args.maximums = None, None, None, None
 
+            phenotype_means, phenotype_stds, phenotype_mins, phenotype_maxs = calculate_phenotype_stats(
+                train_subset, args.phenotype_names, args.log_transform, args.workers, args
+            )
+
+            # Assign successfully calculated stats to args for the current fold
             args.phenotype_means = phenotype_means
             args.phenotype_stds = phenotype_stds
             args.minimums = phenotype_mins
             args.maximums = phenotype_maxs
 
+            # Report what will be used for the current fold
+            for i, name in enumerate(args.phenotype_names):
+                mean_str = f"Mean={args.phenotype_means[i]:.4f}" if args.phenotype_means is not None else "Mean=skipped"
+                std_str = f"Std={args.phenotype_stds[i]:.4f}" if args.phenotype_stds is not None else "Std=skipped"
+                min_str = f"Min={args.minimums[i]:.4f}" if args.minimums is not None else "Min=skipped"
+                max_str = f"Max={args.maximums[i]:.4f}" if args.maximums is not None else "Max=skipped"
+                print(f"    - {name}: {mean_str}, {std_str}, {min_str}, {max_str}")
+
         train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
         test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
 
         if args.distributed:
-            # Distributed samplers need to be aware of the subset
             train_sampler = torch.utils.data.DistributedSampler(train_dataset_for_loader)
             test_sampler = torch.utils.data.DistributedSampler(test_dataset_for_loader, shuffle=False)
         else:
@@ -410,7 +414,6 @@ def k_fold_training(args, num_classes, full_dataset):
         data_loader_test = torch.utils.data.DataLoader(
             test_dataset_for_loader, batch_size=1, sampler=test_sampler, num_workers=args.workers,
             collate_fn=utils.collate_fn
-            # Standard collate for eval
         )
 
         print(f"Fold {fold + 1}: Train size: {len(train_dataset_for_loader)}, Val size: {len(test_dataset_for_loader)}")
@@ -423,20 +426,15 @@ def k_fold_training(args, num_classes, full_dataset):
             if args.rpn_score_thresh is not None:
                 kwargs["rpn_score_thresh"] = args.rpn_score_thresh
         kwargs["device"] = device
-        # do the same for standard_training
         if args.phenotype_loss_weight:
             kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
-        # if args.phenotype_means:
-        #     kwargs["phenotype_means"] = args.phenotype_means
-        # if args.phenotype_stds:
-        #     kwargs["phenotype_stds"] = args.phenotype_stds
         if args.log_transform:
             kwargs["log_transform"] = args.log_transform
         if args.boxcox_lambdas:
             kwargs["boxcox_lambdas"] = args.boxcox_lambdas
-        if args.minimums:
+        if args.minimums is not None:
             kwargs["minimums"] = args.minimums
-        if args.maximums:
+        if args.maximums is not None:
             kwargs["maximums"] = args.maximums
 
         model = get_model(args.model, num_classes=num_classes, **kwargs)
@@ -447,10 +445,10 @@ def k_fold_training(args, num_classes, full_dataset):
             model.load_state_dict(weights)
 
         if not args.test_only:
-            if hasattr(model, "phenotype_means"):
-                model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
-            if hasattr(model, "phenotype_stds"):
-                model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
+            if hasattr(model, "phenotype_means") and args.phenotype_means is not None:
+                model.phenotype_means = args.phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
+            if hasattr(model, "phenotype_stds") and args.phenotype_stds is not None:
+                model.phenotype_stds = args.phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
         model.to(device)
         if args.distributed and args.sync_bn:
@@ -502,7 +500,7 @@ def k_fold_training(args, num_classes, full_dataset):
                 f"Invalid lr scheduler '{args.lr_scheduler}'. Only MultiStepLR and CosineAnnealingLR are supported."
             )
 
-        args.start_epoch = 0  # Reset start_epoch for each new fold
+        args.start_epoch = 0
         if args.resume_kfold and fold == resume_fold_idx:
             checkpoint_path = os.path.join(current_fold_output_dir, "checkpoint.pth")
             if os.path.exists(checkpoint_path):
@@ -538,7 +536,6 @@ def k_fold_training(args, num_classes, full_dataset):
                 utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, f"model_{epoch}.pth"))
                 utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
 
-            # evaluate after every epoch
             evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device,
                                                 phenotype_names=args.phenotype_names)
             last_epoch_evaluator = evaluator
@@ -552,7 +549,6 @@ def k_fold_training(args, num_classes, full_dataset):
                 if evaluator.phenotype_metrics_results:
                     fold_phenotype_metrics[fold] = evaluator.phenotype_metrics_results
 
-        # Save both text summary and numerical results at the end of each fold.
         if last_epoch_evaluator and args.output_dir:
             summary_file_path = os.path.join(current_fold_output_dir, "evaluation_summary.txt")
             save_evaluator_summary(last_epoch_evaluator, summary_file_path)
@@ -677,11 +673,13 @@ def standard_training(args):
         standard_training_impl(config, args)
 
 
-# gak bisa dipake dgn ray tune
 def standard_training_impl(config, args):
     init_dist_args(args)
 
     device = torch.device(args.device)
+
+    # Temporary storage for calculated values
+    calculated_means, calculated_stds, calculated_mins, calculated_maxs = None, None, None, None
 
     kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
     if args.data_augmentation in ["multiscale", "lsj"]:
@@ -695,65 +693,55 @@ def standard_training_impl(config, args):
         kwargs["log_transform"] = args.log_transform
     if args.boxcox_lambdas:
         kwargs["boxcox_lambdas"] = args.boxcox_lambdas
+
+    # Pass provided min/max to kwargs if they exist
     if args.minimums:
         kwargs["minimums"] = args.minimums
     if args.maximums:
         kwargs["maximums"] = args.maximums
 
-    # --- START: MODIFICATION FOR TRAIN-VAL SPLIT ---
-
-    # Check if a validation split is requested from the command line arguments
     if args.val_split and 0 < args.val_split < 1:
         print(f"Train-validation split enabled. Using {args.val_split:.0%} of the data for validation.")
 
-        # 1. Load the full training dataset without applying transforms initially.
         full_dataset, num_classes = get_dataset(is_train=True, args=args, no_transform=True)
 
-        # 2. Calculate the size of each split.
         dataset_size = len(full_dataset)
         val_size = int(args.val_split * dataset_size)
         train_size = dataset_size - val_size
         print(f"Splitting dataset: {train_size} training images, {val_size} validation images.")
 
-        # 3. Perform the random split using a fixed seed for reproducibility.
         train_subset, val_subset = torch.utils.data.random_split(
             full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(96)
         )
 
-        # 4. Calculate phenotype statistics on the training subset before applying augmentations.
         if not args.test_only:
-            # If stats arguments are not provided, calculate them from the training subset.
-            if args.phenotype_means is None or args.phenotype_stds is None or args.minimums is None or args.maximums is None:
+            # Check if any calculation is needed
+            if not (args.skip_mean_calc and args.skip_std_calc and args.skip_min_calc and args.skip_max_calc):
                 print("-" * 50)
-                print("Calculating phenotype statistics for the training split (means, stds, mins, maxs)...")
-                phenotype_means, phenotype_stds, phenotype_mins, phenotype_maxs = calculate_phenotype_stats(
-                    train_subset, args.phenotype_names, args.log_transform, args.workers
+                print("Calculating phenotype statistics for the training split...")
+                calculated_means, calculated_stds, calculated_mins, calculated_maxs = calculate_phenotype_stats(
+                    train_subset, args.phenotype_names, args.log_transform, args.workers, args
                 )
-                # Assign calculated values to args
-                args.phenotype_means = phenotype_means
-                args.phenotype_stds = phenotype_stds
-                args.minimums = phenotype_mins
-                args.maximums = phenotype_maxs
-            else:
-                print("-" * 50)
-                print("Using user-provided phenotype statistics (means, stds, mins, maxs).")
-                # Ensure provided stats are tensors for consistency
-                args.phenotype_means = torch.as_tensor(args.phenotype_means, dtype=torch.float32)
-                args.phenotype_stds = torch.as_tensor(args.phenotype_stds, dtype=torch.float32)
-                args.minimums = torch.as_tensor(args.minimums, dtype=torch.float32)
-                args.maximums = torch.as_tensor(args.maximums, dtype=torch.float32)
 
-            # Print the final statistics being used for the training run
+            # Use calculated value only if not provided via CLI
+            if args.phenotype_means is None: args.phenotype_means = calculated_means
+            if args.phenotype_stds is None: args.phenotype_stds = calculated_stds
+            if args.minimums is None: args.minimums = calculated_mins
+            if args.maximums is None: args.maximums = calculated_maxs
+
+            # Update kwargs with final values for min/max
+            if args.minimums is not None: kwargs["minimums"] = args.minimums
+            if args.maximums is not None: kwargs["maximums"] = args.maximums
+
+            # Print the final statistics being used
             print("Phenotype statistics in use for this run:")
             for i, name in enumerate(args.phenotype_names):
-                # Check if calculation was valid (not NaN)
-                if not torch.isnan(args.phenotype_means[i]):
-                    print(f"    - {name}: Mean={args.phenotype_means[i]:.4f}, Std={args.phenotype_stds[i]:.4f}, Min={args.minimums[i]:.4f}, Max={args.maximums[i]:.4f}")
-                else:
-                    print(f"    - {name}: No phenotype data found.")
+                mean_str = f"Mean={args.phenotype_means[i]:.4f}" if args.phenotype_means is not None else "Mean=unused"
+                std_str = f"Std={args.phenotype_stds[i]:.4f}" if args.phenotype_stds is not None else "Std=unused"
+                min_str = f"Min={args.minimums[i]:.4f}" if args.minimums is not None else "Min=unused"
+                max_str = f"Max={args.maximums[i]:.4f}" if args.maximums is not None else "Max=unused"
+                print(f"    - {name}: {mean_str}, {std_str}, {min_str}, {max_str}")
 
-
-        # 5. Apply the correct transformations to each subset on-the-fly.
         dataset = custom_types.TransformedSubset(
             train_subset, get_transform(is_train=True, args=args)
         )
@@ -761,7 +749,6 @@ def standard_training_impl(config, args):
             val_subset, get_transform(is_train=False, args=args)
         )
     else:
-        # Original behavior: Load train and validation sets from separate sources.
         print("Loading separate train and validation datasets.")
         dataset, num_classes = get_dataset(is_train=True, args=args)
         dataset_test, _ = get_dataset(is_train=False, args=args)
@@ -773,8 +760,6 @@ def standard_training_impl(config, args):
             kwargs["phenotype_stds"] = args.phenotype_stds
             args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
 
-    # --- END: MODIFICATION FOR TRAIN-VAL SPLIT ---
-
     print("Creating model")
 
     model = get_model(args.model, num_classes=num_classes, **kwargs)
@@ -785,12 +770,10 @@ def standard_training_impl(config, args):
         model.load_state_dict(weights)
 
     if not args.test_only:
-        # Ensure args.phenotype_means/stds exist and are tensors before assigning to model
         if hasattr(model, "phenotype_means") and args.phenotype_means is not None:
             model.phenotype_means = torch.as_tensor(args.phenotype_means).unsqueeze(0).type_as(model.phenotype_means)
         if hasattr(model, "phenotype_stds") and args.phenotype_stds is not None:
             model.phenotype_stds = torch.as_tensor(args.phenotype_stds).unsqueeze(0).type_as(model.phenotype_stds)
-
 
     model.to(device)
     if args.distributed and args.sync_bn:
@@ -855,26 +838,7 @@ def standard_training_impl(config, args):
     if args.use_copypaste:
         if args.data_augmentation != "lsj":
             raise RuntimeError("SimpleCopyPaste algorithm currently only supports the 'lsj' data augmentation policies")
-
         train_collate_fn = copypaste_collate_fn
-
-    # # Kalkulasi untuk subset Latih (Train)
-    # if not args.test_only:
-    #     print(f"Calculating phenotype statistics")
-    #
-    #     phenotype_means, phenotype_stds = calculate_phenotype_stats(dataset, args.phenotype_names,
-    #                                                                 args.log_transform)
-    #     for i, name in enumerate(args.phenotype_names):
-    #         # Cek jika kalkulasi valid (bukan NaN)
-    #         if not torch.isnan(phenotype_means[i]):
-    #             print(f"    - {name}: Mean = {phenotype_means[i]:.4f}, Std Dev = {phenotype_stds[i]:.4f}")
-    #         else:
-    #             print(f"    - {name}: No phenotype data found.")
-    #
-    #     args.phenotype_means = phenotype_means
-    #     args.phenotype_stds = phenotype_stds
-    #
-    # train_dataset_for_loader = custom_types.TransformedSet(train_sampler, get_transform(is_train=True, args=args))
 
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_sampler=train_batch_sampler, num_workers=args.workers,
@@ -884,12 +848,6 @@ def standard_training_impl(config, args):
         dataset_test, batch_size=1,
         sampler=test_sampler, num_workers=args.workers,
         collate_fn=train_collate_fn)
-
-    # if not args.test_only:
-    #     if hasattr(model, "phenotype_means"):
-    #         model.phenotype_means = phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
-    #     if hasattr(model, "phenotype_stds"):
-    #         model.phenotype_stds = phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
@@ -925,7 +883,6 @@ def standard_training_impl(config, args):
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
 
-        # evaluate after every epoch
         evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
 
     total_time = time.time() - start_time
@@ -961,11 +918,9 @@ def init_dist_args(args):
 def main(args):
     args_sanity_check(args)
 
-    # Data loading code
     print("Loading data")
 
     if args.k_folds > 1:
-        # is_train is ignored
         dataset, num_classes = get_dataset(is_train=True, args=args, no_transform=True)
         k_fold_training(args, num_classes, dataset)
     else:
