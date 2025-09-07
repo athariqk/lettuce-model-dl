@@ -235,6 +235,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--log-transform", action="store_true")
 
     parser.add_argument("--tuning", action="store_true")
+    parser.add_argument("--no-height", action="store_false")
 
     return parser
 
@@ -436,6 +437,8 @@ def k_fold_training(args, num_classes, full_dataset):
             kwargs["minimums"] = args.minimums
         if args.maximums is not None:
             kwargs["maximums"] = args.maximums
+        if args.no_height is not None:
+            kwargs["with_height"] = args.no_height
 
         model = get_model(args.model, num_classes=num_classes, **kwargs)
 
@@ -693,6 +696,8 @@ def standard_training_impl(config, args):
         kwargs["log_transform"] = args.log_transform
     if args.boxcox_lambdas:
         kwargs["boxcox_lambdas"] = args.boxcox_lambdas
+    if args.no_height is not None:
+        kwargs["with_height"] = args.no_height
 
     # Pass provided min/max to kwargs if they exist
     if args.minimums:
