@@ -32,7 +32,7 @@ def lettuce_model(
     """Loads a model for lettuce growth phenotype estimation"""
 
     variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt" if with_height else\
-        "models/coco-ssd-mobilevitv2-0.75_2nc_1pheno_pretrained.pt"
+        "models/coco-ssd-mobilevitv2-0.75_2nc_1np_pretrained.pt"
 
     model = Modified_SSDLiteMobileViT(
         size=(320, 320),
