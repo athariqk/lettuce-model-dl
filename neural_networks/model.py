@@ -37,6 +37,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             image_std: Optional[List[float]] = None,
             phenotype_means: Optional[List[float]] = None,
             phenotype_stds: Optional[List[float]] = None,
+            num_phenotypes: int = 2,
             boxcox_lambdas: Optional[List[float]] = None,
             minimums: Optional[List[float]] = None,
             maximums: Optional[List[float]] = None,
@@ -73,9 +74,9 @@ class Modified_SSDLiteMobileViT(nn.Module):
         )
 
         if phenotype_means is None:
-            phenotype_means = [0.0, 0.0]
+            phenotype_means = [0.0] * num_phenotypes
         if phenotype_stds is None:
-            phenotype_stds = [1.0, 1.0]
+            phenotype_stds = [1.0] * num_phenotypes
         self.register_buffer("phenotype_stds", torch.Tensor(phenotype_stds).unsqueeze(0))
         self.register_buffer("phenotype_means", torch.Tensor(phenotype_means).unsqueeze(0))
 

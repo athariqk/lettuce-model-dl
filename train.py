@@ -427,6 +427,7 @@ def k_fold_training(args, num_classes, full_dataset):
             if args.rpn_score_thresh is not None:
                 kwargs["rpn_score_thresh"] = args.rpn_score_thresh
         kwargs["device"] = device
+        kwargs["num_phenotypes"] = len(args.phenotype_names)
         if args.phenotype_loss_weight:
             kwargs["phenotype_loss_weight"] = args.phenotype_loss_weight
         if args.log_transform:
@@ -698,6 +699,7 @@ def standard_training_impl(config, args):
         kwargs["boxcox_lambdas"] = args.boxcox_lambdas
     if args.no_height is not None:
         kwargs["with_height"] = args.no_height
+    kwargs["num_phenotypes"] = len(args.phenotype_names)
 
     # Pass provided min/max to kwargs if they exist
     if args.minimums:
