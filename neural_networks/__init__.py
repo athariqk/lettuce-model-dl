@@ -26,13 +26,19 @@ __all__ = [
 def lettuce_model(
         trainable_backbone_layers: Optional[int] = None,
         multimodal=False,
-        with_height=True,
+        num_phenotypes=2,
         **kwargs: Any
 ) -> Modified_SSDLiteMobileViT:
     """Loads a model for lettuce growth phenotype estimation"""
 
-    variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt" if with_height else\
-        "models/coco-ssd-mobilevitv2-0.75_2nc_1np_pretrained.pt"
+    if num_phenotypes is 2:
+        variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt"
+    elif num_phenotypes is 1:
+        variant = "models/coco-ssd-mobilevitv2-0.75_2nc_1np_pretrained.pt"
+    elif num_phenotypes is 5:
+        variant = "models/coco-ssd-mobilevitv2-0.75_2nc_5np_pretrained.pt"
+    else:
+        raise ValueError(f"Unexpected number of phenotypes, expected [5, 2 or 1], got: {num_phenotypes}")
 
     model = Modified_SSDLiteMobileViT(
         size=(320, 320),
