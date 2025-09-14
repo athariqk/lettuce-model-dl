@@ -31,11 +31,11 @@ def lettuce_model(
 ) -> Modified_SSDLiteMobileViT:
     """Loads a model for lettuce growth phenotype estimation"""
 
-    if num_phenotypes is 2:
+    if num_phenotypes == 2:
         variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt"
-    elif num_phenotypes is 1:
+    elif num_phenotypes == 1:
         variant = "models/coco-ssd-mobilevitv2-0.75_2nc_1np_pretrained.pt"
-    elif num_phenotypes is 5:
+    elif num_phenotypes == 5:
         variant = "models/coco-ssd-mobilevitv2-0.75_2nc_5np_pretrained.pt"
     else:
         raise ValueError(f"Unexpected number of phenotypes, expected [5, 2 or 1], got: {num_phenotypes}")
@@ -47,6 +47,7 @@ def lettuce_model(
         image_std=[1.0, 1.0, 1.0],
         pretrained=os.path.join(ROOT_DIR, variant),
         multimodal=multimodal,
+        num_phenotypes=num_phenotypes,
         **kwargs
     )
 
