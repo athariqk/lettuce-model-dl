@@ -140,11 +140,6 @@ class CocoEvaluator:
                             f"DEBUG_PRINT:   Data has 0 phenotype features for image {original_id} despite instances. Skipping.")
                         continue
 
-                    if current_image_data_features not in [1, 2]:
-                        print(
-                            f"DEBUG_PRINT:   Data phenotype feature count ({current_image_data_features}) for image {original_id} is not 1 or 2. Skipping.")
-                        continue
-
                     if current_image_data_features != config_expected_num_features:
                         print(
                             f"DEBUG_PRINT:   Data's feature count ({current_image_data_features}) does not match configured "
