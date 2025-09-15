@@ -341,6 +341,17 @@ class Modified_SSDLiteMobileViT(nn.Module):
             else:
                 losses = self.compute_loss(head_outputs, targets_transformed, anchors)
         else:
+            for i, det in enumerate(detections):
+                if "boxes" in det:
+                    boxes = det["boxes"]
+                    if not torch.isfinite(boxes).all():
+                        raise ValueError(f"[Sample {i}] Found NaN/Inf in boxes: {boxes}")
+                    if (boxes[:, 2] < boxes[:, 0]).any() or (boxes[:, 3] < boxes[:, 1]).any():
+                        raise ValueError(f"[Sample {i}] Malformed boxes (x2<x1 or y2<y1): {boxes}")
+
+            print("images_transformed.image_sizes:", images_transformed.image_sizes)
+            print("original_image_sizes:", original_image_sizes)
+
             detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
             detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
             # returns a list of detections
