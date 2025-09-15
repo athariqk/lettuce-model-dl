@@ -752,6 +752,8 @@ def standard_training_impl(config, args):
         )
     else:
         print("Loading separate train and validation datasets.")
+        dataset, num_classes = get_dataset(is_train=True, args=args)
+        dataset_test, _ = get_dataset(is_train=False, args=args)
 
         if args.phenotype_means:
             kwargs["phenotype_means"] = args.phenotype_means
@@ -759,9 +761,6 @@ def standard_training_impl(config, args):
         if args.phenotype_stds:
             kwargs["phenotype_stds"] = args.phenotype_stds
             args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
-
-        dataset, num_classes = get_dataset(is_train=True, args=args)
-        dataset_test, _ = get_dataset(is_train=False, args=args)
 
     print("Creating model")
 

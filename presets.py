@@ -180,9 +180,9 @@ class DetectionPresetLettuceRGBD:
         ])
 
         if phenotype_means is not None:
-            self.phenotype_means = phenotype_means
+            self.phenotype_means = torch.Tensor(phenotype_means).unsqueeze(0)
         if phenotype_stds is not None:
-            self.phenotype_stds = phenotype_stds
+            self.phenotype_stds = torch.Tensor(phenotype_stds).unsqueeze(0)
         if boxcox_lambdas is not None:
             self.boxcox_lambdas =  torch.Tensor(boxcox_lambdas).unsqueeze(0)
         if minimums is not None:
