@@ -31,14 +31,18 @@ def lettuce_model(
 ) -> Modified_SSDLiteMobileViT:
     """Loads a model for lettuce growth phenotype estimation"""
 
-    if num_phenotypes == 2:
-        variant = "models/coco-ssd-mobilevitv2-0.75_2nc_pretrained.pt"
-    elif num_phenotypes == 1:
+    if num_phenotypes == 1:
         variant = "models/coco-ssd-mobilevitv2-0.75_2nc_1np_pretrained.pt"
+    elif num_phenotypes == 2:
+        variant = "models/coco-ssd-mobilevitv2-0.75_2nc_2np_pretrained.pt"
+    elif num_phenotypes == 3:
+        variant = "models/coco-ssd-mobilevitv2-0.75_2nc_3np_pretrained.pt"
+    elif num_phenotypes == 4:
+        variant = "models/coco-ssd-mobilevitv2-0.75_2nc_4np_pretrained.pt"
     elif num_phenotypes == 5:
         variant = "models/coco-ssd-mobilevitv2-0.75_2nc_5np_pretrained.pt"
     else:
-        raise ValueError(f"Unexpected number of phenotypes, expected [5, 2 or 1], got: {num_phenotypes}")
+        raise ValueError(f"Unexpected number of phenotypes, expected [1, 2, 3, 4 or 5], got: {num_phenotypes}")
 
     model = Modified_SSDLiteMobileViT(
         size=(320, 320),
