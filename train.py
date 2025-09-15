@@ -757,10 +757,8 @@ def standard_training_impl(config, args):
 
         if args.phenotype_means:
             kwargs["phenotype_means"] = args.phenotype_means
-            args.phenotype_means = torch.Tensor(args.phenotype_means).unsqueeze(0)
         if args.phenotype_stds:
             kwargs["phenotype_stds"] = args.phenotype_stds
-            args.phenotype_stds = torch.Tensor(args.phenotype_stds).unsqueeze(0)
 
     print("Creating model")
 

@@ -341,16 +341,22 @@ class Modified_SSDLiteMobileViT(nn.Module):
             else:
                 losses = self.compute_loss(head_outputs, targets_transformed, anchors)
         else:
-            for i, det in enumerate(detections):
-                if "boxes" in det:
-                    boxes = det["boxes"]
-                    if not torch.isfinite(boxes).all():
-                        raise ValueError(f"[Sample {i}] Found NaN/Inf in boxes: {boxes}")
-                    if (boxes[:, 2] < boxes[:, 0]).any() or (boxes[:, 3] < boxes[:, 1]).any():
-                        raise ValueError(f"[Sample {i}] Malformed boxes (x2<x1 or y2<y1): {boxes}")
+            # Debugging image size mismatch
+            for idx, (trans_sz, orig_sz) in enumerate(zip(images_transformed.image_sizes, original_image_sizes)):
+                if not isinstance(trans_sz, (list, tuple)):
+                    trans_sz = tuple(trans_sz)
+                if not isinstance(orig_sz, (list, tuple)):
+                    orig_sz = tuple(orig_sz)
 
-            print("images_transformed.image_sizes:", images_transformed.image_sizes)
-            print("original_image_sizes:", original_image_sizes)
+                print(f"[DEBUG] Sample {idx}: transformed size={trans_sz}, original size={orig_sz}")
+
+                # Sanity checks
+                if trans_sz[0] <= 0 or trans_sz[1] <= 0:
+                    raise ValueError(f"[Sample {idx}] Invalid transformed size: {trans_sz}")
+                if orig_sz[0] <= 0 or orig_sz[1] <= 0:
+                    raise ValueError(f"[Sample {idx}] Invalid original size: {orig_sz}")
+                if abs(trans_sz[0] - orig_sz[0]) > 5000 or abs(trans_sz[1] - orig_sz[1]) > 5000:
+                    raise ValueError(f"[Sample {idx}] Huge mismatch between transformed and original sizes")
 
             detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
             detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
