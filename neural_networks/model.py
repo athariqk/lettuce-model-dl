@@ -341,23 +341,6 @@ class Modified_SSDLiteMobileViT(nn.Module):
             else:
                 losses = self.compute_loss(head_outputs, targets_transformed, anchors)
         else:
-            # Debugging image size mismatch
-            for idx, (trans_sz, orig_sz) in enumerate(zip(images_transformed.image_sizes, original_image_sizes)):
-                if not isinstance(trans_sz, (list, tuple)):
-                    trans_sz = tuple(trans_sz)
-                if not isinstance(orig_sz, (list, tuple)):
-                    orig_sz = tuple(orig_sz)
-
-                print(f"[DEBUG] Sample {idx}: transformed size={trans_sz}, original size={orig_sz}")
-
-                # Sanity checks
-                if trans_sz[0] <= 0 or trans_sz[1] <= 0:
-                    raise ValueError(f"[Sample {idx}] Invalid transformed size: {trans_sz}")
-                if orig_sz[0] <= 0 or orig_sz[1] <= 0:
-                    raise ValueError(f"[Sample {idx}] Invalid original size: {orig_sz}")
-                if abs(trans_sz[0] - orig_sz[0]) > 5000 or abs(trans_sz[1] - orig_sz[1]) > 5000:
-                    raise ValueError(f"[Sample {idx}] Huge mismatch between transformed and original sizes")
-
             detections = self.postprocess_detections(head_outputs, anchors, images_transformed.image_sizes)
             detections = self.transform.postprocess(detections, images_transformed.image_sizes, original_image_sizes)
             # returns a list of detections
