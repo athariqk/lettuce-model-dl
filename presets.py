@@ -3,11 +3,13 @@ import functools
 from typing import Tuple
 
 import cv2
+import numpy as np
 import torch
 
 import transforms as reference_transforms
 
 import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 from custom_types import DualTensor
 
@@ -131,33 +133,88 @@ class DetectionPresetEval:
 
 # Does not work yet
 class DetectionPresetTrainAlbumentation:
-    def __init__(self, data_augmentation):
-        transforms = []
-        augmentation = str.split(data_augmentation, "_alb")[0]
-        kwargs = []
+    def __init__(self, is_train: bool, no_aug: bool, phenotype_means, phenotype_stds, boxcox_lambdas, minimums, maximums,
+                 log_transform):
+        self.is_train = is_train
+        self.log_transform = log_transform
 
-        if augmentation == "ssdmultimodal":
-            transforms += [
+        if phenotype_means is not None:
+            self.phenotype_means = torch.as_tensor(phenotype_means, dtype=torch.float32).unsqueeze(0)
+        if phenotype_stds is not None:
+            self.phenotype_stds = torch.as_tensor(phenotype_stds, dtype=torch.float32).unsqueeze(0)
+        if boxcox_lambdas is not None:
+            self.boxcox_lambdas = torch.as_tensor(boxcox_lambdas, dtype=torch.float32).unsqueeze(0)
+        if minimums is not None:
+            self.minimums = torch.as_tensor(minimums, dtype=torch.float32).unsqueeze(0)
+        if maximums is not None:
+            self.maximums = torch.as_tensor(maximums, dtype=torch.float32).unsqueeze(0)
+
+        if self.is_train and not no_aug:
+            transforms = [
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
-                A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0, rotate_limit=45, p=0.75,
-                                   border_mode=cv2.BORDER_CONSTANT),
+                A.RandomRotate90(p=0.5),
+                A.Rotate(limit=180, p=0.75, border_mode=cv2.BORDER_CONSTANT, value=0),
+                A.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1, p=0.5),
+                A.ToFloat(max_value=255.0),
+                ToTensorV2(),
             ]
-            kwargs = {
-                "bbox_params": A.BboxParams(
-                    format='coco',
-                    label_fields=['class_labels', 'attributes_data', 'iscrowd_data'],  # Added fields
-                    min_visibility=0.1,
-                    min_area=100),
-                "additional_targets": {'aux': 'image'}
-            }
+        else:
+            transforms = [
+                A.ToFloat(max_value=255.0),
+                ToTensorV2(),
+            ]
+
+        kwargs = {
+            "bbox_params": A.BboxParams(
+                format='coco',
+                label_fields=['class_labels', 'phenotypes'],
+                min_visibility=0.1,
+            ),
+            "additional_targets": {'depth': 'image'}
+        }
 
         self.transforms = A.Compose(transforms, **kwargs)
 
     def __call__(self, img, target):
-        if isinstance(img, Tuple):
-            return self.transforms(image=img[0], aux=img[1])
-        return self.transforms(img, target)
+        is_dual_image = isinstance(img, (list, tuple)) and len(img) == 2
+        
+        bboxes = np.array(target['boxes'], dtype=np.float32).tolist()
+        
+        transform_input = {
+            'image': np.array(img[0] if is_dual_image else img),
+            'bboxes': bboxes,
+            'class_labels': target['labels'],
+            'phenotypes': target['phenotypes']
+        }
+        
+        if is_dual_image:
+            transform_input['depth'] = np.array(img[1])
+
+        transformed = self.transforms(**transform_input)
+
+        new_target = {
+            'labels': torch.as_tensor(transformed['class_labels'], dtype=torch.int64),
+            'boxes': torch.as_tensor(transformed['bboxes'], dtype=torch.float32) if transformed['bboxes'] else torch.empty((0, 4)),
+            'phenotypes': torch.as_tensor(transformed['phenotypes'], dtype=torch.float32)
+        }
+
+        if self.is_train and new_target['phenotypes'].numel() > 0:
+            phenotypes = new_target["phenotypes"]
+            if self.log_transform:
+                phenotypes = torch.log1p(phenotypes)
+            if hasattr(self, "minimums") and hasattr(self, "maximums"):
+                phenotypes = (phenotypes - self.minimums) / (self.maximums - self.minimums)
+            if hasattr(self, "boxcox_lambdas"):
+                phenotypes = (torch.pow(phenotypes, self.boxcox_lambdas) - 1) / self.boxcox_lambdas
+            if hasattr(self, "phenotype_means") and hasattr(self, "phenotype_stds"):
+                phenotypes = (phenotypes - self.phenotype_means) / (self.phenotype_stds + 1e-7)
+            new_target["phenotypes"] = phenotypes
+
+        if is_dual_image:
+            return DualTensor(transformed['image'], transformed['depth']), new_target
+        
+        return transformed['image'], new_target
 
 
 class DetectionPresetLettuceRGBD:
