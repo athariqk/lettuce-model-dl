@@ -223,6 +223,7 @@ class DetectionPresetLettuceRGBD:
 
         self.transforms = T.Compose([
             T.ToImage(),
+            T.CenterCrop(size=(800, 800)),
             T.RandomHorizontalFlip(p=0.5),
             T.RandomVerticalFlip(p=0.5),
             T.RandomRotation(degrees=360),
