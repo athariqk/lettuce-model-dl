@@ -77,12 +77,31 @@ def get_transform(is_train, args):
             maximums=args.maximums,
             log_transform=args.log_transform,
         )
+    
+    if args.data_augmentation == "lettuce_rgbd_alb":
+        return presets.DetectionPresetTrainAlbumentation(
+            is_train=is_train,
+            no_aug=False,
+            phenotype_means=args.phenotype_means,
+            phenotype_stds=args.phenotype_stds,
+            boxcox_lambdas=args.boxcox_lambdas,
+            minimums=args.minimums,
+            maximums=args.maximums,
+            log_transform=args.log_transform,
+        )
+    elif args.data_augmentation == "lettuce_rgbd_alb_noaug":
+        return presets.DetectionPresetTrainAlbumentation(
+            is_train=is_train,
+            no_aug=True,
+            phenotype_means=args.phenotype_means,
+            phenotype_stds=args.phenotype_stds,
+            boxcox_lambdas=args.boxcox_lambdas,
+            minimums=args.minimums,
+            maximums=args.maximums,
+            log_transform=args.log_transform,
+        )
 
     if is_train:
-        if "_alb" in args.data_augmentation:
-            return presets.DetectionPresetTrainAlbumentation(
-                data_augmentation=args.data_augmentation
-            )
         return presets.DetectionPresetTrain(
             data_augmentation=args.data_augmentation, backend=args.backend, use_v2=args.use_v2
         )
