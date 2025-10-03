@@ -161,7 +161,7 @@ class DetectionPresetTrainAlbumentation:
 
 
 class DetectionPresetLettuceRGBD:
-    def __init__(self, is_train: bool, no_aug: bool, phenotype_means, phenotype_stds, boxcox_lambdas, minimums, maximums):
+    def __init__(self, is_train: bool, no_aug: bool, phenotype_means, phenotype_stds, boxcox_lambdas, minimums, maximums, log_transform):
         T, tv_tensors = get_modules(True)
 
         self.transforms = T.Compose([
@@ -191,6 +191,8 @@ class DetectionPresetLettuceRGBD:
             self.maximums = torch.Tensor(maximums).unsqueeze(0)
 
         self.is_train = is_train
+        
+        self.log_transform = log_transform
 
         # self.color_transforms = T.Compose([
         #     T.RandomPhotometricDistort(brightness=(0.5, 1.5),
@@ -204,6 +206,9 @@ class DetectionPresetLettuceRGBD:
 
         if self.is_train:
             phenotypes = target["phenotypes"]
+            if self.log_transform:
+                # apply log transform if applied
+                phenotypes = torch.log1p(phenotypes)
             if hasattr(self, "minimums") and hasattr(self, "maximums"):
                 phenotypes = (phenotypes - self.minimums) / (self.maximums - self.minimums) # min max scaling
             if hasattr(self, "boxcox_lambdas"):

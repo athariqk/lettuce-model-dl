@@ -123,9 +123,6 @@ class LettuceRGBDDataset(VisionDataset):
                 current_instance_phenotypes = []
                 for pheno_name in self.phenotype_names:
                     value = attributes.get(pheno_name, 0.0)
-                    # fresh weight has log-normal distribution, try to bring down variance
-                    if pheno_name == "fresh_weight_ln":
-                        value = np.log(value)
                     current_instance_phenotypes.append(value)
                 all_phenotype_values_for_instances.append(current_instance_phenotypes)
 

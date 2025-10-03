@@ -41,12 +41,13 @@ class Modified_SSDLiteMobileViT(nn.Module):
             boxcox_lambdas: Optional[List[float]] = None,
             minimums: Optional[List[float]] = None,
             maximums: Optional[List[float]] = None,
+            log_transform: bool = False,
             score_thresh: float = 0.01,
             nms_thresh: float = 0.5,
             detections_per_img: int = 200,
             topk_candidates: int = 400,
             iou_thresh: float = 0.5,
-            pretrained: str = None,
+            pretrained: str |None = None,
             phenotype_loss_weight: float = 0.0001,
             multimodal = False,
             **kwargs
@@ -102,6 +103,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         self.phenotype_loss_weight = phenotype_loss_weight
         self.multimodal = multimodal
+        
+        self.log_transform = log_transform
 
     # @torch.jit.unused
     def eager_outputs(
@@ -389,6 +392,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
                     phenotype = (phenotype * (self.maximums - self.minimums)) + self.minimums  # min max scaling
                 if hasattr(self, "phenotype_means") and hasattr(self, "phenotype_stds"):
                     phenotype = (phenotype * self.phenotype_stds) + self.phenotype_means
+
+                if self.log_transform:
+                    # reverse log transform if applied
+                    phenotype = torch.exp(phenotype)
 
                 image_boxes.append(box)
                 image_scores.append(score)

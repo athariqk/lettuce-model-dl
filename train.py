@@ -12,7 +12,6 @@ import torchvision
 import torchvision.ops._utils
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
-from ray import tune
 
 import custom_types
 from coco_eval import CocoEvaluator
@@ -65,6 +64,7 @@ def get_transform(is_train, args):
             boxcox_lambdas=args.boxcox_lambdas,
             minimums=args.minimums,
             maximums=args.maximums,
+            log_transform=args.log_transform,
         )
     elif args.data_augmentation == "lettuce_rgbd_noaug":
         return presets.DetectionPresetLettuceRGBD(
@@ -75,6 +75,7 @@ def get_transform(is_train, args):
             boxcox_lambdas=args.boxcox_lambdas,
             minimums=args.minimums,
             maximums=args.maximums,
+            log_transform=args.log_transform,
         )
 
     if is_train:
@@ -662,16 +663,17 @@ def k_fold_training(args, num_classes, full_dataset):
 
 
 def standard_training(args):
-    config = {
-        "lr": tune.grid_search([0.00009, 0.001]),
-        "phenotype_loss_weight": tune.grid_search([0.1, 0.9]),
-    }
+    # config = {
+    #     "lr": tune.grid_search([0.00009, 0.001]),
+    #     "phenotype_loss_weight": tune.grid_search([0.1, 0.9]),
+    # }
 
     if args.tuning:
-        tuner = tune.with_parameters(standard_training_impl, args=args)
-        tune.run(tuner, config=config, num_samples=10)
+        # tuner = tune.with_parameters(standard_training_impl, args=args)
+        # tune.run(tuner, config=config, num_samples=10)
+        pass
     else:
-        standard_training_impl(config, args)
+        standard_training_impl({}, args)
 
 
 def standard_training_impl(config, args):
