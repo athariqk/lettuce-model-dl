@@ -558,6 +558,7 @@ def ssdlite320_dual_mobilenet_v3_large(
             original_image_sizes.append((val[0], val[1]))
 
         # transform the input
+        images = [item.x if isinstance(item, DualTensor) else item for item in images]
         images, targets = self.transform(images, targets)
 
         # Check for degenerate boxes
