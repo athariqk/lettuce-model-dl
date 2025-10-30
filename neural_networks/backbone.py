@@ -1,5 +1,5 @@
 import copy
-from typing import Callable, Dict, OrderedDict
+from typing import Callable, Dict, Optional, OrderedDict
 import timm
 import torch
 import torch.nn as nn
@@ -99,11 +99,11 @@ class SSDLiteDualFeatureExtractorMobileNet(nn.Module):
 
         self.extra = extra
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         # Get feature maps from backbone and extra. Can't be refactored due to JIT limitations.
         output = []
 
-        if self.multimodal:
+        if self.multimodal and y:
             y = self.features_2(y)
             x = self.features[0](x)
             out_c3 = self.aff_0(x, y[0])
