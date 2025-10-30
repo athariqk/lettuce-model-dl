@@ -114,9 +114,10 @@ class SSDLiteDualFeatureExtractorMobileNet(nn.Module):
             out_c5 = self.aff_2(x, y[2]) # type: ignore
             output.append(out_c5)
         else:
-            for block in self.features[:-2]:
+            for block in self.features:
                 x = block(x)
                 output.append(x)
+            output = output[:-2]  # only keep C4 and C5
 
         for block in self.extra:
             x = block(x)
