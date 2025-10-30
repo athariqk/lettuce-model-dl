@@ -82,8 +82,8 @@ class SSDLiteDualFeatureExtractorMobileNet(nn.Module):
         
         self.features_2 = copy.deepcopy(self.features)
         
-        self.aff_0 = AFF(80)
-        self.aff_1 = AFF(160)
+        self.aff_0 = AFF(240)
+        self.aff_1 = AFF(480)
         self.aff_2 = AFF(960)
 
         get_depth = lambda d: max(min_depth, int(d * width_mult))  # noqa: E731
