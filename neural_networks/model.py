@@ -558,12 +558,12 @@ def ssdlite320_dual_mobilenet_v3_large(
             original_image_sizes.append((val[0], val[1]))
 
         # transform the input
-        images = [item.x if isinstance(item, DualTensor) else item for item in images]
-        images, targets = self.transform(images, targets)
+        images_tensors = [item.x if isinstance(item, DualTensor) else item for item in images]
+        images_transform, targets_transform = self.transform(images_tensors, targets)
 
         # Check for degenerate boxes
-        if targets is not None:
-            for target_idx, target in enumerate(targets):
+        if targets_transform is not None:
+            for target_idx, target in enumerate(targets_transform):
                 boxes = target["boxes"]
                 degenerate_boxes = boxes[:, 2:] <= boxes[:, :2]
                 if degenerate_boxes.any():
@@ -577,11 +577,11 @@ def ssdlite320_dual_mobilenet_v3_large(
 
         if multimodal:
             aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
-            aux_images, _ = self.transform(aux_tensors)
-            features = self.backbone(images.tensors, aux_images.tensors)
+            aux_images_transform, _ = self.transform(aux_tensors)
+            features = self.backbone(images_transform.tensors, aux_images_transform.tensors)
         else:
             # get the features from the backbone
-            features = self.backbone(images.tensors)
+            features = self.backbone(images_transform.tensors)
             if isinstance(features, torch.Tensor):
                 features = OrderedDict([("0", features)])
 
@@ -591,16 +591,16 @@ def ssdlite320_dual_mobilenet_v3_large(
         head_outputs = self.head(features)
 
         # create the set of anchors
-        anchors = self.anchor_generator(images, features)
+        anchors = self.anchor_generator(images_transform, features)
 
         losses = {}
         detections: List[Dict[str, Tensor]] = []
         if self.training:
             matched_idxs = []
-            if targets is None:
+            if targets_transform is None:
                 torch._assert(False, "targets should not be none when in training mode")
             else:
-                for anchors_per_image, targets_per_image in zip(anchors, targets):
+                for anchors_per_image, targets_per_image in zip(anchors, targets_transform):
                     if targets_per_image["boxes"].numel() == 0:
                         matched_idxs.append(
                             torch.full(
@@ -612,10 +612,10 @@ def ssdlite320_dual_mobilenet_v3_large(
                     match_quality_matrix = box_ops.box_iou(targets_per_image["boxes"], anchors_per_image)
                     matched_idxs.append(self.proposal_matcher(match_quality_matrix))
 
-                losses = self.compute_loss(targets, head_outputs, anchors, matched_idxs)
+                losses = self.compute_loss(targets_transform, head_outputs, anchors, matched_idxs)
         else:
-            detections = self.postprocess_detections(head_outputs, anchors, images.image_sizes)
-            detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
+            detections = self.postprocess_detections(head_outputs, anchors, images_transform.image_sizes)
+            detections = self.transform.postprocess(detections, images_transform.image_sizes, original_image_sizes)
             # returns a list of detections
 
         return self.eager_outputs(losses, detections)
