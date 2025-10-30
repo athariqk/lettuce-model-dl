@@ -529,7 +529,7 @@ def ssdlite320_dual_mobilenet_v3_large(
         size,
         num_classes,
         head=ModifiedSSDLiteHead(out_channels, num_anchors, num_classes, norm_layer),
-        **kwargs,
+        **{**defaults, **kwargs},
     )
     
     def modified_forward(self: SSD, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None):

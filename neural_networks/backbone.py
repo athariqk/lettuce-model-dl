@@ -103,7 +103,7 @@ class SSDLiteDualFeatureExtractorMobileNet(nn.Module):
         # Get feature maps from backbone and extra. Can't be refactored due to JIT limitations.
         output = []
 
-        if self.multimodal and y:
+        if self.multimodal and y is not None:
             y = self.features_2(y)
             x = self.features[0](x)
             out_c3 = self.aff_0(x, y[0]) # type: ignore
