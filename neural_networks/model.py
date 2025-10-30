@@ -582,10 +582,11 @@ def ssdlite320_dual_mobilenet_v3_large(
         else:
             # get the features from the backbone
             features = self.backbone(images_transform.tensors)
-            if isinstance(features, torch.Tensor):
-                features = OrderedDict([("0", features)])
 
-            features = list(features.values())
+        if isinstance(features, torch.Tensor):
+            features = OrderedDict([("0", features)])
+
+        features = list(features.values())
 
         # compute the ssd heads outputs using the features
         head_outputs = self.head(features)
