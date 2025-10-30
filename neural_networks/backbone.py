@@ -106,12 +106,12 @@ class SSDLiteDualFeatureExtractorMobileNet(nn.Module):
         if self.multimodal and y:
             y = self.features_2(y)
             x = self.features[0](x)
-            out_c3 = self.aff_0(x, y[0])
+            out_c3 = self.aff_0(x, y[0]) # type: ignore
             x = self.features[1](out_c3)
-            out_c4 = self.aff_1(x, y[1])
+            out_c4 = self.aff_1(x, y[1]) # type: ignore
             output.append(out_c4)
             x = self.features[2](out_c4)
-            out_c5 = self.aff_2(x, y[2])
+            out_c5 = self.aff_2(x, y[2]) # type: ignore
             output.append(out_c5)
         else:
             for block in self.features:
