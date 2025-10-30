@@ -1,8 +1,9 @@
-from typing import Callable, OrderedDict
+import copy
+from typing import Callable, Dict, OrderedDict
 import timm
 import torch
 import torch.nn as nn
-from torchvision.models.detection.ssdlite import _normal_init
+from torchvision.models.detection.ssdlite import _normal_init, _extra_block
 
 from .blocks import AFF, DWSeparableConvBlock
 
@@ -45,59 +46,80 @@ class RGBStream(nn.Module):
         x_3 = self.final_conv(x)
         return [x_2, x_3] # SSD only needs the last 2 feature maps
 
-class MobileViTV2FeatureExtractor(nn.Module):
+
+class SSDLiteDualFeatureExtractorMobileNet(nn.Module):
     def __init__(
-      self: str,
-      norm_layer: Callable[..., nn.Module],
-      dual_backbone: bool = False,
+        self,
+        backbone: nn.Sequential,
+        c3_pos: int,
+        c4_pos: int,
+        norm_layer: Callable[..., nn.Module],
+        multimodal,
+        width_mult: float = 1.0,
+        min_depth: int = 16,
     ):
-      super().__init__()
+        super().__init__()
+        self.multimodal = multimodal
 
-      # the depth stream is unmodified
-      self.aux = timm.create_model(
-        'mobilevitv2_075.cvnets_in1k',
-        pretrained=True,
-        features_only=True
-      )
+        if backbone[c3_pos].use_res_connect:
+            raise ValueError("backbone[c3_pos].use_res_connect should be False")
+        if backbone[c4_pos].use_res_connect:
+            raise ValueError("backbone[c4_pos].use_res_connect should be False")
 
-      # infused with fusion blocks
-      self.main = RGBStream() if dual_backbone else nn.Identity()
-      
-      final_numchannel = -1
-      if dual_backbone:
-          final_numchannel = self.main.feature_info.info[-1]["num_chs"]
-      else:
-          final_numchannel = self.aux.feature_info.info[-1]["num_chs"]
-
-      self.extra = nn.ModuleList(
-        [
-          DWSeparableConvBlock(final_numchannel, 512, 3, norm_layer),
-          DWSeparableConvBlock(512, 256, 3, norm_layer),
-          DWSeparableConvBlock(256, 256, 3, norm_layer),
-          DWSeparableConvBlock(256, 128, 3, norm_layer),
-        ]
-      )
-      _normal_init(self.extra)
-      
-      self.dual_backbone = dual_backbone
-
-    def forward(self, x: torch.Tensor, aux: torch.Tensor = None):
-        output = []
-        
-        if self.dual_backbone:
-            aux = self.aux(aux)
-
-            x = self.main(x, aux[-3], aux[-2], aux[-1])
-            output.extend(x)
-            x = x[-1]
+        if multimodal:
+            self.features = nn.Sequential(
+                # As described in section 6.3 of MobileNetV3 paper
+                nn.Sequential(*backbone[:c3_pos], backbone[c3_pos].block[0]),
+                nn.Sequential(backbone[c3_pos].block[1:], *backbone[c3_pos + 1 : c4_pos], backbone[c4_pos].block[0]),
+                nn.Sequential(backbone[c4_pos].block[1:], *backbone[c4_pos + 1 :]),
+            )
         else:
-            # use the unmodified backbone
-            x = self.aux(x)
-            output.extend(x[-2:])
-            x = x[-1]
+            self.features = nn.Sequential(
+                # As described in section 6.3 of MobileNetV3 paper
+                nn.Sequential(*backbone[:c4_pos], backbone[c4_pos].block[0]),  # from start until C4 expansion layer
+                nn.Sequential(backbone[c4_pos].block[1:], *backbone[c4_pos + 1 :]),  # from C4 depthwise until end
+            )
+        
+        self.features_2 = copy.deepcopy(self.features)
+        
+        self.aff_0 = AFF(80)
+        self.aff_1 = AFF(160)
+        self.aff_2 = AFF(960)
+
+        get_depth = lambda d: max(min_depth, int(d * width_mult))  # noqa: E731
+        extra = nn.ModuleList(
+            [
+                _extra_block(backbone[-1].out_channels, get_depth(512), norm_layer),
+                _extra_block(get_depth(512), get_depth(256), norm_layer),
+                _extra_block(get_depth(256), get_depth(256), norm_layer),
+                _extra_block(get_depth(256), get_depth(128), norm_layer),
+            ]
+        )
+        _normal_init(extra)
+
+        self.extra = extra
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # Get feature maps from backbone and extra. Can't be refactored due to JIT limitations.
+        output = []
+
+        if self.multimodal:
+            y = self.features_2(y)
+            x = self.features[0](x)
+            out_c3 = self.aff_0(x, y[0])
+            x = self.features[1](out_c3)
+            out_c4 = self.aff_1(x, y[1])
+            output.append(out_c4)
+            x = self.features[2](out_c4)
+            out_c5 = self.aff_2(x, y[2])
+            output.append(out_c5)
+        else:
+            for block in self.features:
+                x = block(x)
+                output.append(x)
 
         for block in self.extra:
-          x = block(x)
-          output.append(x)
+            x = block(x)
+            output.append(x)
 
         return OrderedDict([(str(i), v) for i, v in enumerate(output)])

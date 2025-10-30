@@ -34,6 +34,6 @@ class SSDLitePhenotypeHead(SSDScoringHead):
     def __init__(self, in_channels: List[int], num_anchors: List[int], norm_layer: Callable[..., nn.Module]):
         phenotype_reg = nn.ModuleList()
         for channels, anchors in zip(in_channels, num_anchors):
-            phenotype_reg.append(_prediction_block(channels, 2 * anchors, 3, norm_layer))
+            phenotype_reg.append(_prediction_block(channels, 1 * anchors, 3, norm_layer))
         _normal_init(phenotype_reg)
-        super().__init__(phenotype_reg, 2)
+        super().__init__(phenotype_reg, 1)

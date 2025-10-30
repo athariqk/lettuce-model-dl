@@ -5,14 +5,9 @@ import torch.nn as nn
 from typing import Any, Callable, Optional
 
 from torchvision.models.detection.backbone_utils import _validate_trainable_layers
-from torchvision.models.detection.ssd import SSD
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 
-from .utils import retrieve_out_channels
-
-from .model import Modified_SSDLiteMobileViT, PhenotypeRegressor
-from .backbone import MobileViTV2FeatureExtractor
-from .head import ModifiedSSDLiteHead
+from .model import ssdlite320_dual_mobilenet_v3_large, Modified_SSDLiteMobileViT, PhenotypeRegressor
 
 from my_utils import ROOT_DIR
 
@@ -58,8 +53,9 @@ def lettuce_model(
     if trainable_backbone_layers is not None:
         for parameter in model.model.encoder.parameters():
             parameter.requires_grad_(trainable_backbone_layers >= 2)
-        for parameter in model.model.extra_layers.parameters():
-            parameter.requires_grad_(trainable_backbone_layers >= 1)
+        if model.model.extra_layers:
+            for parameter in model.model.extra_layers.parameters():
+                parameter.requires_grad_(trainable_backbone_layers >= 1)
 
     return model
 
@@ -70,6 +66,11 @@ def lettuce_model_multimodal(
 ) -> Modified_SSDLiteMobileViT:
     """Loads a multimodal model for lettuce growth phenotype estimation"""
     return lettuce_model(trainable_backbone_layers=trainable_backbone_layers, multimodal=True, **kwargs)
+
+
+def lettuce_model_multimodal_mobnetv3(multimodal=True,):
+    """Loads a multimodal model for lettuce growth phenotype estimation with MobileNetV3 backbone"""
+    return ssdlite320_dual_mobilenet_v3_large(multimodal=multimodal, num_classes=2)
 
 
 def baseline_model(

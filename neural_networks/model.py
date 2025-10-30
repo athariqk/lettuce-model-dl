@@ -1,23 +1,31 @@
 import copy
+from functools import partial
 import os
 import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+from torchvision.models import mobilenet_v3_large, MobileNet_V3_Large_Weights
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
 from torchvision.models.detection._utils import BoxCoder, _topk_min
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 from torchvision.ops import boxes as box_ops
 from torchvision.models.detection._utils import SSDMatcher
-from typing import Dict, List, Optional, Tuple, Sequence, NamedTuple
+from typing import Any, Callable, Dict, List, Optional, OrderedDict, Tuple, Sequence, NamedTuple
 from cvnets.models.detection.ssd import SingleShotMaskDetector
 import torchvision.transforms.v2 as transforms
+from cvnets.models.classification.base_image_encoder import BaseImageEncoder
+import torchvision.models.detection._utils as det_utils
+from torchvision.models.detection.transform import ImageList
+from torchvision.models.detection.ssdlite import SSDLite320_MobileNet_V3_Large_Weights, _ovewrite_value_param, _validate_trainable_layers, _normal_init
+from torchvision.models.detection.ssd import SSD
 
 from my_utils import ROOT_DIR
+from neural_networks.backbone import SSDLiteDualFeatureExtractorMobileNet
 from neural_networks.blocks import AFF
 from custom_types import DualTensor
+from neural_networks.head import ModifiedSSDLiteHead
 
 
 class HeadOutputs(NamedTuple):
@@ -60,7 +68,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
         self.model: SingleShotMaskDetector = torch.load(pretrained, weights_only=False)
 
-        self.aux_encoder = copy.deepcopy(self.model.encoder) if multimodal else nn.Identity()
+        self.aux_encoder: BaseImageEncoder | nn.Identity = copy.deepcopy(self.model.encoder) if multimodal else nn.Identity()
 
         self.aff_0 = AFF(self.model.enc_l3_channels) if multimodal else nn.Identity()
         self.aff_1 = AFF(self.model.enc_l4_channels) if multimodal else nn.Identity()
@@ -194,7 +202,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0 and model_outputs_phenotypes:
                 matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
                 pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
-                phenotype_loss_per_image = torch.nn.functional.smooth_l1_loss(
+                phenotype_loss_per_image = torch.nn.functional.mse_loss(
                     pred_phenotypes, matched_phenotypes, reduction="sum"
                 )
                 phenotype_loss.append(phenotype_loss_per_image)
@@ -229,16 +237,20 @@ class Modified_SSDLiteMobileViT(nn.Module):
         }
 
     def get_backbone_features(self, x_main: Tensor, x_aux: Tensor) -> Dict[str, Tensor]:
-        aux_enc_features = self.aux_encoder.extract_end_points_all(x_aux)
+        if isinstance(self.aux_encoder, BaseImageEncoder):
+            aux_enc_features = self.aux_encoder.extract_end_points_all(x_aux)
+        else:
+            # Handle Identity case by creating empty features
+            aux_enc_features = {"out_l3": x_aux, "out_l4": x_aux, "out_l5": x_aux}
 
-        x = self.model.encoder.conv_1(x_main)
-        x = self.model.encoder.layer_1(x)
-        x = self.model.encoder.layer_2(x)
-        x = self.model.encoder.layer_3(x)
+        x = self.model.encoder.conv_1(x_main) # type: ignore
+        x = self.model.encoder.layer_1(x) # type: ignore
+        x = self.model.encoder.layer_2(x) # type: ignore
+        x = self.model.encoder.layer_3(x) # type: ignore
         out_l3 = self.aff_0(x, aux_enc_features["out_l3"])
-        x = self.model.encoder.layer_4(out_l3)
+        x = self.model.encoder.layer_4(out_l3) # type: ignore
         out_l4 = self.aff_1(x, aux_enc_features["out_l4"])
-        x = self.model.encoder.layer_5(out_l4)
+        x = self.model.encoder.layer_5(out_l4) # type: ignore
         out_l5 = self.aff_2(x, aux_enc_features["out_l5"])
 
         end_points: Dict = dict()
@@ -251,7 +263,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
                 end_points["os_{}".format(os)] = out_l5
             else:
                 x = end_points["os_{}".format(self.model.output_strides[idx - 1])]
-                end_points["os_{}".format(os)] = self.model.extra_layers["os_{}".format(os)](
+                end_points["os_{}".format(os)] = self.model.extra_layers["os_{}".format(os)]( # type: ignore
                     x
                 )
 
@@ -422,9 +434,202 @@ class Modified_SSDLiteMobileViT(nn.Module):
         return detections
 
 
+def _mobilenet_extractor(
+    backbone,
+    trainable_layers: int,
+    norm_layer: Callable[..., nn.Module],
+    multimodal,
+):
+    backbone = backbone.features
+    # Gather the indices of blocks which are strided. These are the locations of C1, ..., Cn-1 blocks.
+    # The first and last blocks are always included because they are the C0 (conv1) and Cn.
+    stage_indices = [0] + [i for i, b in enumerate(backbone) if getattr(b, "_is_cn", False)] + [len(backbone) - 1]
+    num_stages = len(stage_indices)
+
+    # find the index of the layer from which we won't freeze
+    if not 0 <= trainable_layers <= num_stages:
+        raise ValueError("trainable_layers should be in the range [0, {num_stages}], instead got {trainable_layers}")
+    freeze_before = len(backbone) if trainable_layers == 0 else stage_indices[num_stages - trainable_layers]
+
+    for b in backbone[:freeze_before]:
+        for parameter in b.parameters():
+            parameter.requires_grad_(False)
+
+    return SSDLiteDualFeatureExtractorMobileNet(backbone, stage_indices[-3], stage_indices[-2], norm_layer, multimodal)
+
+
+def ssdlite320_dual_mobilenet_v3_large(
+    *,
+    weights: Optional[SSDLite320_MobileNet_V3_Large_Weights] = None,
+    progress: bool = True,
+    num_classes: Optional[int] = None,
+    weights_backbone: Optional[MobileNet_V3_Large_Weights] = MobileNet_V3_Large_Weights.IMAGENET1K_V1,
+    trainable_backbone_layers: Optional[int] = None,
+    norm_layer: Optional[Callable[..., nn.Module]] = None,
+    multimodal = True,
+    **kwargs: Any,
+) -> SSD:
+    weights = SSDLite320_MobileNet_V3_Large_Weights.verify(weights)
+    weights_backbone = MobileNet_V3_Large_Weights.verify(weights_backbone)
+
+    if "size" in kwargs:
+        warnings.warn("The size of the model is already fixed; ignoring the parameter.")
+
+    if weights is not None:
+        weights_backbone = None
+        num_classes = _ovewrite_value_param("num_classes", num_classes, len(weights.meta["categories"]))
+    elif num_classes is None:
+        num_classes = 91
+
+    trainable_backbone_layers = _validate_trainable_layers(
+        weights is not None or weights_backbone is not None, trainable_backbone_layers, 6, 6
+    )
+
+    # Enable reduced tail if no pretrained backbone is selected. See Table 6 of MobileNetV3 paper.
+    reduce_tail = weights_backbone is None
+
+    if norm_layer is None:
+        norm_layer = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
+
+    backbone = mobilenet_v3_large(
+        weights=weights_backbone, progress=progress, norm_layer=norm_layer, reduced_tail=reduce_tail, **kwargs
+    )
+    if weights_backbone is None:
+        # Change the default initialization scheme if not pretrained
+        _normal_init(backbone)
+    backbone = _mobilenet_extractor(
+        backbone,
+        trainable_backbone_layers,
+        norm_layer,
+        multimodal,
+    )
+
+    size = (320, 320)
+    anchor_generator = DefaultBoxGenerator([[2, 3] for _ in range(6)], min_ratio=0.2, max_ratio=0.95)
+    out_channels = det_utils.retrieve_out_channels(backbone, size)
+    num_anchors = anchor_generator.num_anchors_per_location()
+    if len(out_channels) != len(anchor_generator.aspect_ratios):
+        raise ValueError(
+            f"The length of the output channels from the backbone {len(out_channels)} do not match the length of the anchor generator aspect ratios {len(anchor_generator.aspect_ratios)}"
+        )
+
+    defaults = {
+        "score_thresh": 0.001,
+        "nms_thresh": 0.55,
+        "detections_per_img": 300,
+        "topk_candidates": 300,
+        # Rescale the input in a way compatible to the backbone:
+        # The following mean/std rescale the data from [0, 1] to [-1, 1]
+        "image_mean": [0.5, 0.5, 0.5],
+        "image_std": [0.5, 0.5, 0.5],
+    }
+    model = SSD(
+        backbone,
+        anchor_generator,
+        size,
+        num_classes,
+        head=ModifiedSSDLiteHead(out_channels, num_anchors, num_classes, norm_layer),
+        **kwargs,
+    )
+    
+    def modified_forward(self: SSD, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None):
+        if self.training:
+            if targets is None:
+                torch._assert(False, "targets should not be none when in training mode")
+            else:
+                for target in targets:
+                    boxes = target["boxes"]
+                    if isinstance(boxes, torch.Tensor):
+                        torch._assert(
+                            len(boxes.shape) == 2 and boxes.shape[-1] == 4,
+                            f"Expected target boxes to be a tensor of shape [N, 4], got {boxes.shape}.",
+                        )
+                    else:
+                        torch._assert(False, f"Expected target boxes to be of type Tensor, got {type(boxes)}.")
+
+        # get the original image sizes
+        original_image_sizes: List[Tuple[int, int]] = []
+        for img in images:
+            val = img.shape[-2:]
+            torch._assert(
+                len(val) == 2,
+                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
+            )
+            original_image_sizes.append((val[0], val[1]))
+
+        # transform the input
+        images, targets = self.transform(images, targets)
+
+        # Check for degenerate boxes
+        if targets is not None:
+            for target_idx, target in enumerate(targets):
+                boxes = target["boxes"]
+                degenerate_boxes = boxes[:, 2:] <= boxes[:, :2]
+                if degenerate_boxes.any():
+                    bb_idx = torch.where(degenerate_boxes.any(dim=1))[0][0]
+                    degen_bb: List[float] = boxes[bb_idx].tolist()
+                    torch._assert(
+                        False,
+                        "All bounding boxes should have positive height and width."
+                        f" Found invalid box {degen_bb} for target at index {target_idx}.",
+                    )
+
+        if multimodal:
+            aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
+            aux_images, _ = self.transform(aux_tensors)
+            features = self.backbone(images.tensors, aux_images.tensors)
+        else:
+            # get the features from the backbone
+            features = self.backbone(images.tensors)
+            if isinstance(features, torch.Tensor):
+                features = OrderedDict([("0", features)])
+
+            features = list(features.values())
+
+        # compute the ssd heads outputs using the features
+        head_outputs = self.head(features)
+
+        # create the set of anchors
+        anchors = self.anchor_generator(images, features)
+
+        losses = {}
+        detections: List[Dict[str, Tensor]] = []
+        if self.training:
+            matched_idxs = []
+            if targets is None:
+                torch._assert(False, "targets should not be none when in training mode")
+            else:
+                for anchors_per_image, targets_per_image in zip(anchors, targets):
+                    if targets_per_image["boxes"].numel() == 0:
+                        matched_idxs.append(
+                            torch.full(
+                                (anchors_per_image.size(0),), -1, dtype=torch.int64, device=anchors_per_image.device
+                            )
+                        )
+                        continue
+
+                    match_quality_matrix = box_ops.box_iou(targets_per_image["boxes"], anchors_per_image)
+                    matched_idxs.append(self.proposal_matcher(match_quality_matrix))
+
+                losses = self.compute_loss(targets, head_outputs, anchors, matched_idxs)
+        else:
+            detections = self.postprocess_detections(head_outputs, anchors, images.image_sizes)
+            detections = self.transform.postprocess(detections, images.image_sizes, original_image_sizes)
+            # returns a list of detections
+
+        return self.eager_outputs(losses, detections)
+
+    model.forward = modified_forward.__get__(model, SSD)
+
+    if weights is not None:
+        model.load_state_dict(weights.get_state_dict(progress=progress, check_hash=True))
+
+    return model
+
+
 def mobilenet_branch():
     mnet = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
-    mnet.classifier = nn.Identity()
+    mnet.classifier = nn.Identity() # type: ignore
     return mnet
 
 
