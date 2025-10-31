@@ -532,6 +532,107 @@ def ssdlite320_dual_mobilenet_v3_large(
         **{**defaults, **kwargs},
     )
     
+    def modified_compute_loss(
+            self,
+            head_outputs: HeadOutputs,
+            targets: List[Dict[str, Tensor]],
+            anchors: List[Tensor],
+    ) -> Dict[str, Tensor]:
+        matched_idxs = []
+        for anchors_per_image, targets_per_image in zip(anchors, targets):
+            if targets_per_image["boxes"].numel() == 0:
+                matched_idxs.append(
+                    torch.full(
+                        (anchors_per_image.size(0),), -1, dtype=torch.int64, device=anchors_per_image.device
+                    )
+                )
+                continue
+
+            match_quality_matrix = box_ops.box_iou(targets_per_image["boxes"], anchors_per_image)
+            matched_idxs.append(self.proposal_matcher(match_quality_matrix))
+
+        bbox_regression = head_outputs.bbox_regression
+        cls_logits = head_outputs.cls_logits
+        phenotypes_pred = head_outputs.phenotypes_pred
+
+        model_outputs_phenotypes = phenotypes_pred.shape[-1] > 0
+
+        # Match original targets with default boxes
+        num_foreground = 0
+        bbox_loss = []
+        cls_targets = []
+        phenotype_loss = []
+        for (
+                targets_per_image,
+                bbox_regression_per_image,
+                cls_logits_per_image,
+                phenotypes_pred_per_image,
+                anchors_per_image,
+                matched_idxs_per_image,
+        ) in zip(targets, bbox_regression, cls_logits, phenotypes_pred, anchors, matched_idxs):
+            # produce the matching between boxes and targets
+            foreground_idxs_per_image = torch.where(matched_idxs_per_image >= 0)[0]
+            foreground_matched_idxs_per_image = matched_idxs_per_image[foreground_idxs_per_image]
+            num_foreground += foreground_matched_idxs_per_image.numel()
+
+            # Calculate regression loss
+            matched_gt_boxes_per_image = targets_per_image["boxes"][foreground_matched_idxs_per_image]
+            bbox_regression_per_image = bbox_regression_per_image[foreground_idxs_per_image, :]
+            anchors_per_image = anchors_per_image[foreground_idxs_per_image, :]
+            target_regression = self.box_coder.encode_single(matched_gt_boxes_per_image, anchors_per_image)
+            bbox_loss.append(
+                torch.nn.functional.smooth_l1_loss(bbox_regression_per_image, target_regression, reduction="sum")
+            )
+
+            # Estimate ground truth for class targets
+            gt_classes_target = torch.zeros(
+                (cls_logits_per_image.size(0),),
+                dtype=targets_per_image["labels"].dtype,
+                device=targets_per_image["labels"].device,
+            )
+            gt_classes_target[foreground_idxs_per_image] = targets_per_image["labels"][
+                foreground_matched_idxs_per_image
+            ]
+            cls_targets.append(gt_classes_target)
+
+            # Calculate phenotype loss (only for foreground objects)
+            if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0 and model_outputs_phenotypes:
+                matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
+                pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
+                phenotype_loss_per_image = torch.nn.functional.mse_loss(
+                    pred_phenotypes, matched_phenotypes, reduction="sum"
+                )
+                phenotype_loss.append(phenotype_loss_per_image)
+            else:
+                phenotype_loss.append(torch.tensor(0.0, device=bbox_regression.device))
+
+        bbox_loss = torch.stack(bbox_loss)
+        cls_targets = torch.stack(cls_targets)
+        phenotype_loss = torch.stack(phenotype_loss)
+
+        # Calculate classification loss
+        num_classes = cls_logits.size(-1)
+        cls_loss = F.cross_entropy(cls_logits.view(-1, num_classes), cls_targets.view(-1), reduction="none").view(
+            cls_targets.size()
+        )
+
+        # Hard Negative Sampling
+        foreground_idxs = cls_targets > 0
+        num_negative = self.neg_to_pos_ratio * foreground_idxs.sum(1, keepdim=True)
+        # num_negative[num_negative < self.neg_to_pos_ratio] = self.neg_to_pos_ratio
+        negative_loss = cls_loss.clone()
+        negative_loss[foreground_idxs] = -float("inf")  # use -inf to detect positive values that creeped in the sample
+        values, idx = negative_loss.sort(1, descending=True)
+        # background_idxs = torch.logical_and(idx.sort(1)[1] < num_negative, torch.isfinite(values))
+        background_idxs = idx.sort(1)[1] < num_negative
+
+        N = max(1, num_foreground)
+        return {
+            "bbox_loss": bbox_loss.sum() / N,
+            "cls_loss": (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N,
+            "phenotype_loss": (phenotype_loss.sum() / N) * self.phenotype_loss_weight,
+        }
+    
     def modified_forward(self: SSD, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None):
         if self.training:
             if targets is None:
@@ -589,7 +690,13 @@ def ssdlite320_dual_mobilenet_v3_large(
         features = list(features.values())
 
         # compute the ssd heads outputs using the features
-        head_outputs = self.head(features)
+        cls_logits, bbox_regression, phenotypes_pred = self.head(features)
+
+        head_outputs = HeadOutputs(
+            cls_logits=cls_logits,
+            bbox_regression=bbox_regression,
+            phenotypes_pred=phenotypes_pred
+        )
 
         # create the set of anchors
         anchors = self.anchor_generator(images_transform, features)
@@ -597,31 +704,91 @@ def ssdlite320_dual_mobilenet_v3_large(
         losses = {}
         detections: List[Dict[str, Tensor]] = []
         if self.training:
-            matched_idxs = []
             if targets_transform is None:
                 torch._assert(False, "targets should not be none when in training mode")
             else:
-                for anchors_per_image, targets_per_image in zip(anchors, targets_transform):
-                    if targets_per_image["boxes"].numel() == 0:
-                        matched_idxs.append(
-                            torch.full(
-                                (anchors_per_image.size(0),), -1, dtype=torch.int64, device=anchors_per_image.device
-                            )
-                        )
-                        continue
-
-                    match_quality_matrix = box_ops.box_iou(targets_per_image["boxes"], anchors_per_image)
-                    matched_idxs.append(self.proposal_matcher(match_quality_matrix))
-
-                losses = self.compute_loss(targets_transform, head_outputs, anchors, matched_idxs)
+                losses = self.compute_loss(head_outputs, targets_transform, anchors) # type: ignore
         else:
-            detections = self.postprocess_detections(head_outputs, anchors, images_transform.image_sizes)
+            detections = self.postprocess_detections(head_outputs, anchors, images_transform.image_sizes) # type: ignore
             detections = self.transform.postprocess(detections, images_transform.image_sizes, original_image_sizes)
             # returns a list of detections
 
         return self.eager_outputs(losses, detections)
 
+    def modified_postprocess_detections(
+            self, head_outputs: HeadOutputs, image_anchors: List[Tensor], image_shapes: List[Tuple[int, int]]
+    ) -> List[Dict[str, Tensor]]:
+        bbox_regression = head_outputs.bbox_regression
+        pred_scores = F.softmax(head_outputs.cls_logits, dim=-1)
+        phenotypes_pred = head_outputs.phenotypes_pred
+
+        num_classes = pred_scores.size(-1)
+        device = pred_scores.device
+
+        detections: List[Dict[str, Tensor]] = []
+
+        for boxes, scores, phenotypes, anchors, image_shape in zip(bbox_regression, pred_scores, phenotypes_pred,
+                                                                   image_anchors, image_shapes):
+            boxes = self.box_coder.decode_single(boxes, anchors)
+            boxes = box_ops.clip_boxes_to_image(boxes, image_shape)
+
+            image_boxes = []
+            image_scores = []
+            image_labels = []
+            image_phenotypes = []
+            for label in range(1, num_classes):
+                score = scores[:, label]
+
+                keep_idxs = score > self.score_thresh
+                score = score[keep_idxs]
+                box = boxes[keep_idxs]
+                phenotype = phenotypes[keep_idxs]
+
+                # keep only topk scoring predictions
+                num_topk = _topk_min(score, self.topk_candidates, 0)
+                score, idxs = score.topk(num_topk)
+                box = box[idxs]
+                phenotype = phenotype[idxs]
+
+                # transform to original scale
+                if hasattr(self, "boxcox_lambdas"):
+                    phenotype = torch.pow(phenotype * self.boxcox_lambdas + 1, 1 / self.boxcox_lambdas)
+                if hasattr(self, "minimums") and hasattr(self, "maximums"):
+                    phenotype = (phenotype * (self.maximums - self.minimums)) + self.minimums  # min max scaling
+                if hasattr(self, "phenotype_means") and hasattr(self, "phenotype_stds"):
+                    phenotype = (phenotype * self.phenotype_stds) + self.phenotype_means
+
+                if self.log_transform:
+                    # reverse log transform if applied
+                    phenotype = torch.exp(phenotype)
+
+                image_boxes.append(box)
+                image_scores.append(score)
+                image_labels.append(torch.full_like(score, fill_value=label, dtype=torch.int64, device=device))
+                image_phenotypes.append(phenotype)
+
+            image_boxes = torch.cat(image_boxes, dim=0)
+            image_scores = torch.cat(image_scores, dim=0)
+            image_labels = torch.cat(image_labels, dim=0)
+            image_phenotypes = torch.cat(image_phenotypes, dim=0)
+
+            # non-maximum suppression
+            keep = box_ops.batched_nms(image_boxes, image_scores, image_labels, self.nms_thresh)
+            keep = keep[: self.detections_per_img]
+
+            detections.append(
+                {
+                    "boxes": image_boxes[keep],
+                    "scores": image_scores[keep],
+                    "labels": image_labels[keep],
+                    "phenotypes": image_phenotypes[keep]
+                }
+            )
+        return detections
+
+    model.compute_loss = modified_compute_loss.__get__(model, SSD)
     model.forward = modified_forward.__get__(model, SSD)
+    model.postprocess_detections = modified_postprocess_detections.__get__(model, SSD)
 
     if weights is not None:
         model.load_state_dict(weights.get_state_dict(progress=progress, check_hash=True))
