@@ -690,7 +690,7 @@ def ssdlite320_dual_mobilenet_v3_large(
         features = list(features.values())
 
         # compute the ssd heads outputs using the features
-        cls_logits, bbox_regression, phenotypes_pred = self.head(features)
+        bbox_regression, cls_logits, phenotypes_pred = self.head(features)
 
         head_outputs = HeadOutputs(
             cls_logits=cls_logits,
