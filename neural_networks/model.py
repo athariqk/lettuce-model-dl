@@ -466,6 +466,14 @@ def ssdlite320_dual_mobilenet_v3_large(
     weights_backbone: Optional[MobileNet_V3_Large_Weights] = MobileNet_V3_Large_Weights.IMAGENET1K_V1,
     trainable_backbone_layers: Optional[int] = None,
     norm_layer: Optional[Callable[..., nn.Module]] = None,
+    phenotype_means: Optional[List[float]] = None,
+    phenotype_stds: Optional[List[float]] = None,
+    num_phenotypes: int = 2,
+    boxcox_lambdas: Optional[List[float]] = None,
+    minimums: Optional[List[float]] = None,
+    maximums: Optional[List[float]] = None,
+    log_transform: bool = False,
+    phenotype_loss_weight: float = 0.0001,
     multimodal = True,
     **kwargs: Any,
 ) -> SSD:
@@ -532,22 +540,23 @@ def ssdlite320_dual_mobilenet_v3_large(
         **{**defaults, **kwargs},
     )
     
-    if kwargs["phenotype_means"] is None:
-        kwargs["phenotype_means"] = [0.0] * kwargs["num_phenotypes"]
-    if kwargs["phenotype_stds"] is None:
-        kwargs["phenotype_stds"] = [1.0] * kwargs["num_phenotypes"]
-    model.register_buffer("phenotype_stds", torch.Tensor(kwargs["phenotype_stds"]).unsqueeze(0))
-    model.register_buffer("phenotype_means", torch.Tensor(kwargs["phenotype_means"]).unsqueeze(0))
+    if phenotype_means is None:
+        phenotype_means = [0.0] * num_phenotypes
+    if phenotype_stds is None:
+        phenotype_stds = [1.0] * num_phenotypes
+    model.register_buffer("phenotype_stds", torch.Tensor(phenotype_stds).unsqueeze(0))
+    model.register_buffer("phenotype_means", torch.Tensor(phenotype_means).unsqueeze(0))
 
-    if kwargs["boxcox_lambdas"] is not None:
-        model.register_buffer("boxcox_lambdas", torch.Tensor(kwargs["boxcox_lambdas"]).unsqueeze(0))
-    if kwargs["minimums"] is not None:
-        model.register_buffer("minimums", torch.Tensor(kwargs["minimums"]).unsqueeze(0))
-    if kwargs["maximums"] is not None:
-        model.register_buffer("maximums", torch.Tensor(kwargs["maximums"]).unsqueeze(0))
+    if boxcox_lambdas is not None:
+        model.register_buffer("boxcox_lambdas", torch.Tensor(boxcox_lambdas).unsqueeze(0))
+    if minimums is not None:
+        model.register_buffer("minimums", torch.Tensor(minimums).unsqueeze(0))
+    if maximums is not None:
+        model.register_buffer("maximums", torch.Tensor(maximums).unsqueeze(0))
 
-    setattr(model, "phenotype_loss_weight", kwargs["phenotype_loss_weight"])
+    setattr(model, "phenotype_loss_weight", phenotype_loss_weight)
     setattr(model, "multimodal", multimodal)
+    setattr(model, "log_transform", log_transform)
 
     def modified_compute_loss(
             self,
