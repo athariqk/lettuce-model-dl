@@ -532,6 +532,23 @@ def ssdlite320_dual_mobilenet_v3_large(
         **{**defaults, **kwargs},
     )
     
+    if kwargs["phenotype_means"] is None:
+        kwargs["phenotype_means"] = [0.0] * kwargs["num_phenotypes"]
+    if kwargs["phenotype_stds"] is None:
+        kwargs["phenotype_stds"] = [1.0] * kwargs["num_phenotypes"]
+    model.register_buffer("phenotype_stds", torch.Tensor(kwargs["phenotype_stds"]).unsqueeze(0))
+    model.register_buffer("phenotype_means", torch.Tensor(kwargs["phenotype_means"]).unsqueeze(0))
+
+    if kwargs["boxcox_lambdas"] is not None:
+        model.register_buffer("boxcox_lambdas", torch.Tensor(kwargs["boxcox_lambdas"]).unsqueeze(0))
+    if kwargs["minimums"] is not None:
+        model.register_buffer("minimums", torch.Tensor(kwargs["minimums"]).unsqueeze(0))
+    if kwargs["maximums"] is not None:
+        model.register_buffer("maximums", torch.Tensor(kwargs["maximums"]).unsqueeze(0))
+
+    setattr(model, "phenotype_loss_weight", kwargs["phenotype_loss_weight"])
+    setattr(model, "multimodal", multimodal)
+
     def modified_compute_loss(
             self,
             head_outputs: HeadOutputs,
