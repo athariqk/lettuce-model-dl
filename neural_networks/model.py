@@ -625,6 +625,12 @@ def ssdlite320_dual_mobilenet_v3_large(
             if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0 and model_outputs_phenotypes:
                 matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
                 pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
+                with torch.no_grad():
+                    print("pred_phenotypes.shape", pred_phenotypes.shape,
+                          "pred mean/std", pred_phenotypes.mean().item(), pred_phenotypes.std().item())
+                    print("matched_phenotypes.shape", matched_phenotypes.shape,
+                          "gt mean/std", matched_phenotypes.mean().item(), matched_phenotypes.std().item())
+                    print("num_foreground", foreground_idxs_per_image.numel())
                 phenotype_loss_per_image = torch.nn.functional.mse_loss(
                     pred_phenotypes, matched_phenotypes, reduction="sum"
                 )
