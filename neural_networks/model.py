@@ -18,14 +18,14 @@ import torchvision.transforms.v2 as transforms
 from cvnets.models.classification.base_image_encoder import BaseImageEncoder
 import torchvision.models.detection._utils as det_utils
 from torchvision.models.detection.transform import ImageList
-from torchvision.models.detection.ssdlite import SSDLite320_MobileNet_V3_Large_Weights, _ovewrite_value_param, _validate_trainable_layers, _normal_init
+from torchvision.models.detection.ssdlite import SSDLiteHead, SSDLite320_MobileNet_V3_Large_Weights, _ovewrite_value_param, _validate_trainable_layers, _normal_init, _mobilenet_extractor
 from torchvision.models.detection.ssd import SSD
 
 from my_utils import ROOT_DIR
 from neural_networks.backbone import SSDLiteDualFeatureExtractorMobileNet
 from neural_networks.blocks import AFF
 from custom_types import DualTensor
-from neural_networks.head import ModifiedSSDLiteHead
+from neural_networks.head import ModifiedSSDLiteHead, SSDLitePhenotypeHead
 
 
 class HeadOutputs(NamedTuple):
@@ -434,28 +434,23 @@ class Modified_SSDLiteMobileViT(nn.Module):
         return detections
 
 
-def _mobilenet_extractor(
-    backbone,
-    trainable_layers: int,
-    norm_layer: Callable[..., nn.Module],
-    multimodal,
-):
-    backbone = backbone.features
-    # Gather the indices of blocks which are strided. These are the locations of C1, ..., Cn-1 blocks.
-    # The first and last blocks are always included because they are the C0 (conv1) and Cn.
-    stage_indices = [0] + [i for i, b in enumerate(backbone) if getattr(b, "_is_cn", False)] + [len(backbone) - 1]
-    num_stages = len(stage_indices)
-
-    # find the index of the layer from which we won't freeze
-    if not 0 <= trainable_layers <= num_stages:
-        raise ValueError("trainable_layers should be in the range [0, {num_stages}], instead got {trainable_layers}")
-    freeze_before = len(backbone) if trainable_layers == 0 else stage_indices[num_stages - trainable_layers]
-
-    for b in backbone[:freeze_before]:
-        for parameter in b.parameters():
-            parameter.requires_grad_(False)
-
-    return SSDLiteDualFeatureExtractorMobileNet(backbone, stage_indices[-3], stage_indices[-2], norm_layer, multimodal)
+def _resplit_to_c3c4c5_features(features: nn.Sequential, c3_pos=7, c4_pos=13) -> nn.Sequential:
+    all_layers = []
+    for segment in features:
+        if isinstance(segment, nn.Sequential):
+            for layer in segment:
+                all_layers.append(layer)
+        else:
+            all_layers.append(segment)
+    
+    return nn.Sequential(
+        # C3: from start until 7th block's expansion layer (output: 240 channels)
+        nn.Sequential(*all_layers[:c3_pos], all_layers[c3_pos].block[0]),
+        # C4: from 7th block's depthwise until C4 expansion layer (output: 672 channels)
+        nn.Sequential(all_layers[c3_pos].block[1:], *all_layers[c3_pos + 1:c4_pos], all_layers[c4_pos]),
+        # C5: from C4 depthwise until end (output: 960 channels)
+        nn.Sequential(all_layers[c4_pos + 1], *all_layers[c4_pos + 2:]),
+    )
 
 
 def ssdlite320_dual_mobilenet_v3_large(
@@ -509,7 +504,6 @@ def ssdlite320_dual_mobilenet_v3_large(
         backbone,
         trainable_backbone_layers,
         norm_layer,
-        multimodal,
     )
 
     size = (320, 320)
@@ -536,10 +530,33 @@ def ssdlite320_dual_mobilenet_v3_large(
         anchor_generator,
         size,
         num_classes,
-        head=ModifiedSSDLiteHead(out_channels, num_anchors, num_classes, norm_layer),
+        head=SSDLiteHead(out_channels, num_anchors, num_classes, norm_layer),
         **{**defaults, **kwargs},
     )
+
+    if weights is not None:
+        model.load_state_dict(weights.get_state_dict(progress=progress, check_hash=True))
+
+    model.backbone.features = _resplit_to_c3c4c5_features(model.backbone.features) # type: ignore    
+    if multimodal:
+        model.backbone.features_2 = copy.deepcopy(model.backbone.features)
+        model.backbone.aff_0 = AFF(240)
+        model.backbone.aff_1 = AFF(672)
+        model.backbone.aff_2 = AFF(960)
+        _normal_init(model.backbone.aff_0)
+        _normal_init(model.backbone.aff_1)
+        _normal_init(model.backbone.aff_2)
+        
+    model.head.phenotype_head = SSDLitePhenotypeHead(out_channels, num_anchors, norm_layer)
     
+    def modified_head_forward(self, x: List[Tensor]) -> Tuple[Tensor, Tensor, Tensor]:
+        bbox_regression = self.regression_head(x)
+        cls_logits = self.classification_head(x)
+        phenotype_regression = self.phenotype_head(x)
+        return bbox_regression, cls_logits, phenotype_regression
+    
+    model.head.forward = modified_head_forward.__get__(model.head, SSDLiteHead)
+
     if phenotype_means is None:
         phenotype_means = [0.0] * num_phenotypes
     if phenotype_stds is None:
@@ -665,7 +682,7 @@ def ssdlite320_dual_mobilenet_v3_large(
             "phenotype_loss": (phenotype_loss.sum() / N) * self.phenotype_loss_weight,
         }
     
-    def modified_forward(self: SSD, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None):
+    def modified_forward(self, images: List[DualTensor | Tensor], targets: Optional[List[Dict[str, Tensor]]] = None):
         if self.training:
             if targets is None:
                 torch._assert(False, "targets should not be none when in training mode")
@@ -708,18 +725,36 @@ def ssdlite320_dual_mobilenet_v3_large(
                         f" Found invalid box {degen_bb} for target at index {target_idx}.",
                     )
 
+        features = []
+        x: Tensor = images_transform.tensors
         if multimodal:
+            # get the features from the dual backbone
             aux_tensors: List[Tensor] = [item.y if isinstance(item, DualTensor) else item for item in images]
             aux_images_transform, _ = self.transform(aux_tensors)
-            features = self.backbone(images_transform.tensors, aux_images_transform.tensors)
+            y_c3 = self.backbone.features_2[0](aux_images_transform.tensors)
+            y_c4 = self.backbone.features_2[1](y_c3)
+            y_c5 = self.backbone.features_2[2](y_c4)
+            x = self.backbone.features[0](x)
+            out_c3 = self.backbone.aff_0(x, y_c3)
+            x = self.backbone.features[1](out_c3)
+            out_c4 = self.backbone.aff_1(x, y_c4)
+            features.append(out_c4)
+            x = self.backbone.features[2](out_c4)
+            out_c5 = self.backbone.aff_2(x, y_c5)
+            features.append(out_c5)
+            x = out_c5
         else:
             # get the features from the backbone
-            features = self.backbone(images_transform.tensors)
+            out_c3 = self.backbone.features[0](x)
+            out_c4 = self.backbone.features[1](out_c3)
+            features.append(out_c4)
+            out_c5 = self.backbone.features[2](out_c4)
+            features.append(out_c5)
+            x = out_c5
 
-        if isinstance(features, torch.Tensor):
-            features = OrderedDict([("0", features)])
-
-        features = list(features.values())
+        for block in self.backbone.extra:
+            x = block(x)
+            features.append(x)
 
         # compute the ssd heads outputs using the features
         bbox_regression, cls_logits, phenotypes_pred = self.head(features)
@@ -821,9 +856,6 @@ def ssdlite320_dual_mobilenet_v3_large(
     model.compute_loss = modified_compute_loss.__get__(model, SSD)
     model.forward = modified_forward.__get__(model, SSD)
     model.postprocess_detections = modified_postprocess_detections.__get__(model, SSD)
-
-    if weights is not None:
-        model.load_state_dict(weights.get_state_dict(progress=progress, check_hash=True))
 
     return model
 
