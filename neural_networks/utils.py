@@ -45,7 +45,7 @@ def get_model(name: str, **kwargs) -> nn.Module:
 
     if "lettuce_model_multimodal" == name:
         model = neural_networks.lettuce_model_multimodal(**kwargs)
-    if "lettuce_model_multimodal_mobnetv3" == name:
+    elif "lettuce_model_multimodal_mobnetv3" == name:
         model = neural_networks.lettuce_model_multimodal_mobnetv3(**kwargs)
     elif "lettuce_model" == name:
         model = neural_networks.lettuce_model(**kwargs)
