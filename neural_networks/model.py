@@ -202,7 +202,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0 and model_outputs_phenotypes:
                 matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
                 pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
-                phenotype_loss_per_image = torch.nn.functional.mse_loss(
+                phenotype_loss_per_image = torch.nn.functional.smooth_l1_loss(
                     pred_phenotypes, matched_phenotypes, reduction="sum"
                 )
                 phenotype_loss.append(phenotype_loss_per_image)
@@ -642,7 +642,7 @@ def ssdlite320_dual_mobilenet_v3_large(
             if "phenotypes" in targets_per_image and foreground_idxs_per_image.numel() > 0 and model_outputs_phenotypes:
                 matched_phenotypes = targets_per_image["phenotypes"][foreground_matched_idxs_per_image]
                 pred_phenotypes = phenotypes_pred_per_image[foreground_idxs_per_image]
-                phenotype_loss_per_image = torch.nn.functional.mse_loss(
+                phenotype_loss_per_image = torch.nn.functional.smooth_l1_loss(
                     pred_phenotypes, matched_phenotypes, reduction="sum"
                 )
                 phenotype_loss.append(phenotype_loss_per_image)
