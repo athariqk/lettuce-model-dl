@@ -49,6 +49,8 @@ def get_model(name: str, **kwargs) -> nn.Module:
         model = neural_networks.lettuce_model_multimodal_mobnetv3(**kwargs)
     elif "lettuce_model" == name:
         model = neural_networks.lettuce_model(**kwargs)
+    elif "lettuce_model_mobnetv3" == name:
+        model = neural_networks.lettuce_model_mobnetv3(**kwargs)
     elif "lettuce_model_no_height" == name:
         model = neural_networks.lettuce_model(with_height=False)
     elif "baseline_model_80" == name:

@@ -68,9 +68,14 @@ def lettuce_model_multimodal(
     return lettuce_model(trainable_backbone_layers=trainable_backbone_layers, multimodal=True, **kwargs)
 
 
-def lettuce_model_multimodal_mobnetv3(multimodal=True, **kwargs: Any):
+def lettuce_model_mobnetv3(**kwargs: Any):
     """Loads a multimodal model for lettuce growth phenotype estimation with MobileNetV3 backbone"""
-    return ssdlite320_dual_mobilenet_v3_large(multimodal=multimodal, **kwargs)
+    return ssdlite320_dual_mobilenet_v3_large(**kwargs)
+
+
+def lettuce_model_multimodal_mobnetv3(**kwargs: Any):
+    """Loads a multimodal model for lettuce growth phenotype estimation with MobileNetV3 backbone"""
+    return ssdlite320_dual_mobilenet_v3_large(multimodal=True, **kwargs)
 
 
 def baseline_model(

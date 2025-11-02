@@ -469,7 +469,7 @@ def ssdlite320_dual_mobilenet_v3_large(
     maximums: Optional[List[float]] = None,
     log_transform: bool = False,
     phenotype_loss_weight: float = 0.0001,
-    multimodal = True,
+    multimodal = False,
     **kwargs: Any,
 ) -> SSD:
     weights = SSDLite320_MobileNet_V3_Large_Weights.verify(weights)
