@@ -404,7 +404,6 @@ def k_fold_training(args, num_classes, full_dataset):
     Modified K-Fold training loop.
     Integrates CSV logging and best-by-validation-loss checkpointing.
     """
-    init_dist_args(args)
     device = torch.device(args.device)
 
     kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=42) # Use fixed random_state
@@ -641,34 +640,36 @@ def k_fold_training(args, num_classes, full_dataset):
                 val_loss, val_components = float('nan'), {}
             val_history[epoch] = {"val_loss": val_loss, "components": val_components}
 
-            # --- Checkpoint (Modified) ---
-            if current_fold_output_dir:
-                checkpoint = {
-                    "model": model_without_ddp.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "lr_scheduler": lr_scheduler.state_dict(),
-                    "args": args,
-                    "epoch": epoch,
-                    "fold": fold + 1,
-                    "val_loss": val_loss  # <-- Added
-                }
-                if scaler:
-                    checkpoint["scaler"] = scaler.state_dict()
-                utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, f"model_{epoch}.pth"))
-                utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
-
-            # --- NEW: Best-by-Val-Loss Logic ---
             is_best = False
             if not np.isnan(val_loss) and val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_epoch = epoch
                 is_best = True
-                if utils.is_main_process():
-                    try:
-                        shutil.copyfile(os.path.join(current_fold_output_dir, "checkpoint.pth"),
-                                        os.path.join(current_fold_output_dir, "model_best_by_val.pth"))
-                    except Exception as e:
-                        print(f"Warning: copying best checkpoint failed: {e}")
+                
+                # --- SAVE ONLY IF BEST ---
+                if current_fold_output_dir:
+                    checkpoint = {
+                        "model": model_without_ddp.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "lr_scheduler": lr_scheduler.state_dict(),
+                        "args": args,
+                        "epoch": epoch,
+                        "fold": fold + 1,
+                        "val_loss": val_loss
+                    }
+                    if scaler:
+                        checkpoint["scaler"] = scaler.state_dict()
+                    
+                    # Save the new best checkpoint (for resuming)
+                    utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
+                    
+                    # Save the permanent "best_by_val" copy
+                    if utils.is_main_process():
+                        try:
+                            shutil.copyfile(os.path.join(current_fold_output_dir, "checkpoint.pth"),
+                                            os.path.join(current_fold_output_dir, "model_best_by_val.pth"))
+                        except Exception as e:
+                            print(f"Warning: copying best checkpoint failed: {e}")
 
             # --- Evaluate (from train_original.py) ---
             evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device,
@@ -810,13 +811,12 @@ def k_fold_training(args, num_classes, full_dataset):
     return None
 
 
-def standard_training_impl(config, args):
+def standard_training_impl(args):
     """
     Modified Standard training loop (from train_original.py).
     Integrates CSV logging and best-by-validation-loss checkpointing.
     Returns a dict with results for the orchestration wrapper.
     """
-    init_dist_args(args)
     device = torch.device(args.device)
 
     # --- Data setup (CRITICAL logic from train_original.py) ---
@@ -1026,33 +1026,35 @@ def standard_training_impl(config, args):
             val_loss, val_components = float('nan'), {}
         val_history[epoch] = {"val_loss": val_loss, "components": val_components}
 
-        # --- Checkpoint (Modified) ---
-        if args.output_dir:
-            checkpoint = {
-                "model": model_without_ddp.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "lr_scheduler": lr_scheduler.state_dict(),
-                "args": args,
-                "epoch": epoch,
-                "val_loss": val_loss # <-- Added
-            }
-            if scaler:
-                checkpoint["scaler"] = scaler.state_dict()
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-
-        # --- NEW: Best-by-Val-Loss Logic ---
         is_best = False
         if not np.isnan(val_loss) and val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
             is_best = True
-            if utils.is_main_process():
-                try:
-                    shutil.copyfile(os.path.join(args.output_dir, "checkpoint.pth"),
-                                    os.path.join(args.output_dir, "model_best_by_val.pth"))
-                except Exception as e:
-                    print(f"Warning: copying best checkpoint failed: {e}")
+
+            # --- SAVE ONLY IF BEST ---
+            if args.output_dir:
+                checkpoint = {
+                    "model": model_without_ddp.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "lr_scheduler": lr_scheduler.state_dict(),
+                    "args": args,
+                    "epoch": epoch,
+                    "val_loss": val_loss
+                }
+                if scaler:
+                    checkpoint["scaler"] = scaler.state_dict()
+                
+                # Save the new best checkpoint (for resuming)
+                utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+
+                # Save the permanent "best_by_val" copy
+                if utils.is_main_process():
+                    try:
+                        shutil.copyfile(os.path.join(args.output_dir, "checkpoint.pth"),
+                                        os.path.join(args.output_dir, "model_best_by_val.pth"))
+                    except Exception as e:
+                        print(f"Warning: copying best checkpoint failed: {e}")
 
         # --- Evaluate ---
         evaluator = evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
@@ -1115,9 +1117,6 @@ def args_sanity_check(args):
 
 
 def init_dist_args(args):
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        print("Distributed process group already initialized. Skipping.")
-        return
     utils.init_distributed_mode(args)
     if args.use_deterministic_algorithms:
         torch.use_deterministic_algorithms(True)
@@ -1152,7 +1151,7 @@ def run_single_seed(args, seed):
 
     # --- Run core logic from original main() ---
     args_sanity_check(args)
-    # init_dist_args(args) # This is called *inside* the training loops
+    init_dist_args(args)
     print("Loading data")
     
     run_summary = {"seed": seed, "output_dir": args.output_dir}
@@ -1168,7 +1167,7 @@ def run_single_seed(args, seed):
             run_summary['kfold_summary_file'] = kfold_summary_file
         else:
             # Pass empty config dict (for `tune` compatibility) and args
-            train_results = standard_training_impl({}, args)
+            train_results = standard_training_impl(args)
             run_summary.update(train_results)
             num_classes = train_results.get("num_classes", num_classes)
 
