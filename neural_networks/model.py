@@ -67,6 +67,8 @@ class Modified_SSDLiteMobileViT(nn.Module):
             pretrained = os.path.join(ROOT_DIR, "models/coco-ssd-mobilevitv2-0.75_81nc_pretrained.pt")
 
         self.model: SingleShotMaskDetector = torch.load(pretrained, weights_only=False)
+        
+        print(f"Using SSD output_strides={self.model.output_strides}")
 
         self.aux_encoder: BaseImageEncoder | nn.Identity = copy.deepcopy(self.model.encoder) if multimodal else nn.Identity()
 
@@ -344,7 +346,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
             bbox_regression=bbox_regression,
             phenotypes_pred=phenotypes_pred
         )
-
+        
         # create the set of anchors
         anchors = self.anchor_generator(images_transformed, list(features.values()))
 

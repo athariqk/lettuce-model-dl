@@ -8,9 +8,6 @@ import torch
 
 import transforms as reference_transforms
 
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-
 from custom_types import DualTensor
 
 
@@ -135,6 +132,9 @@ class DetectionPresetEval:
 class DetectionPresetTrainAlbumentation:
     def __init__(self, is_train: bool, no_aug: bool, phenotype_means, phenotype_stds, boxcox_lambdas, minimums, maximums,
                  log_transform):
+        import albumentations as A
+        from albumentations.pytorch import ToTensorV2
+
         self.is_train = is_train
         self.log_transform = log_transform
 

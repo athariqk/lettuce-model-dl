@@ -48,7 +48,7 @@ class DualTensor:
         raise TypeError(f"Unhashable type: '{self.__class__.__name__}' as it contains mutable tensors.")
 
     @classmethod
-    def collate(self, list_of_dual_tensors: list['DualTensor']) -> 'DualTensor':
+    def collate(cls, list_of_dual_tensors: list['DualTensor']) -> 'DualTensor':
         """
         Collates a list of single-sample DualTensor objects into a single batched DualTensor.
         Each DualTensor in the list is assumed to represent a single sample (e.g., tensor_a has shape [C, H, W]).
@@ -67,7 +67,7 @@ class DualTensor:
         batched_tensor_a = torch.stack([dt.x for dt in list_of_dual_tensors], dim=0)
         batched_tensor_b = torch.stack([dt.y for dt in list_of_dual_tensors], dim=0)
 
-        return self(batched_tensor_a, batched_tensor_b)
+        return cls(batched_tensor_a, batched_tensor_b)
 
 
 class TransformedSubset(torch.utils.data.Dataset):
@@ -95,3 +95,22 @@ class TransformedSubset(torch.utils.data.Dataset):
     @property
     def indices(self):
         return self.subset.indices
+
+
+class TransformedSet(torch.utils.data.Dataset):
+    def __init__(self, dataset, transform):
+        self.dataset = dataset
+        self.transform = transform
+
+    def __getitem__(self, index):
+        data, target = self.dataset[index]
+
+        if self.transform:
+            data, target = self.transform(data, target)
+            if isinstance(data, list) and len(data) == 2:
+                return DualTensor(data[0], data[1]), target
+
+        return data, target
+
+    def __len__(self):
+        return len(self.dataset)
