@@ -141,6 +141,25 @@ def compute_validation_loss(model, data_loader, device, print_freq=100):
     return mean_loss, mean_components
 
 
+def _convert_metrics_to_serializable(item):
+    """Recursively converts numpy/torch types to standard python types for JSON."""
+    if isinstance(item, dict):
+        return {k: _convert_metrics_to_serializable(v) for k, v in item.items()}
+    if isinstance(item, list):
+        return [_convert_metrics_to_serializable(v) for v in item]
+    if isinstance(item, np.ndarray):
+        return item.tolist()
+    if hasattr(torch, 'Tensor') and isinstance(item, torch.Tensor):
+        return item.tolist()
+    # Check for numpy scalar types
+    if isinstance(item, np.floating):
+        return float(item)
+    if isinstance(item, np.integer):
+        return int(item)
+    # Return item as-is if it's already a serializable type
+    return item
+
+
 def get_eval_metrics_dict(evaluator: CocoEvaluator) -> dict:
     """Extracts metrics from the evaluator for CSV logging."""
     eval_metrics_dict = {}
@@ -151,7 +170,10 @@ def get_eval_metrics_dict(evaluator: CocoEvaluator) -> dict:
                     # Convert numpy array to list for JSON serialization
                     eval_metrics_dict[iou_type] = coco_eval.stats.tolist()
         if evaluator.phenotype_metrics_results:
-            eval_metrics_dict['phenotype'] = evaluator.phenotype_metrics_results
+            # Recursively convert numpy/torch types to standard python types
+            eval_metrics_dict['phenotype'] = _convert_metrics_to_serializable(
+                evaluator.phenotype_metrics_results
+            )
     return eval_metrics_dict
 
 # ------------------------------------------------------------
@@ -1179,7 +1201,7 @@ def run_single_seed(args, seed):
 
         if best_ckpt_path and os.path.exists(best_ckpt_path):
             print(f"Loading best checkpoint for measurement: {best_ckpt_path}")
-            chk = torch.load(best_ckpt_path, map_location="cpu")
+            chk = torch.load(best_ckpt_path, map_location="cpu", weights_only=False)
             model_for_measure.load_state_dict(chk["model"])
             if 'val_loss' in chk:
                 run_summary['val_loss'] = float(chk['val_loss'])
