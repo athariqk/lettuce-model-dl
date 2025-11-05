@@ -1115,7 +1115,9 @@ def args_sanity_check(args):
 
 
 def init_dist_args(args):
-    """(from train_original.py)"""
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        print("Distributed process group already initialized. Skipping.")
+        return
     utils.init_distributed_mode(args)
     if args.use_deterministic_algorithms:
         torch.use_deterministic_algorithms(True)
