@@ -65,11 +65,11 @@ def count_parameters(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def measure_latency(model: torch.nn.Module, sample_input: torch.Tensor, device: torch.device,
+def measure_latency(model: torch.nn.Module, sample_input: custom_types.DualTensor, device: torch.device,
                     warmup: int = 50, runs: int = 200) -> float:
     """Measure single-image latency (ms)."""
     model.eval()
-    example = sample_input.to(device)
+    example = [sample_input.to(device)]
     try:
         traced = torch.jit.trace(model.eval(), example)
     except Exception:
@@ -77,12 +77,12 @@ def measure_latency(model: torch.nn.Module, sample_input: torch.Tensor, device: 
 
     with torch.no_grad():
         for _ in range(warmup):
-            _ = traced(example)
+            _ = traced(example) # type: ignore
         if device.type == "cuda":
             torch.cuda.synchronize()
         t0 = time.time()
         for _ in range(runs):
-            _ = traced(example)
+            _ = traced(example) # type: ignore
         if device.type == "cuda":
             torch.cuda.synchronize()
         t1 = time.time()
@@ -119,7 +119,12 @@ def compute_validation_loss(model, data_loader, device, print_freq=100):
             targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
             loss_dict = model(images, targets)
             loss_dict_reduced = utils.reduce_dict(loss_dict)
-            loss_value = float(sum(loss for loss in loss_dict_reduced.values()).item())
+            # Guard against empty loss dicts: compute tensor sum explicitly to avoid Python int fallback
+            if loss_dict_reduced:
+                # Stack scalar tensors then sum to ensure result is a torch.Tensor and has .item()
+                loss_value = float(torch.stack([loss for loss in loss_dict_reduced.values()]).sum().item())
+            else:
+                loss_value = 0.0
 
             batch_size = len(images)
             total_loss += loss_value * batch_size
@@ -449,8 +454,8 @@ def k_fold_training(args, num_classes, full_dataset):
         if args.output_dir:
             utils.mkdir(current_fold_output_dir)
 
-        train_subset = torch.utils.data.Subset(full_dataset, train_idx)
-        test_subset = torch.utils.data.Subset(full_dataset, test_idx)
+        train_subset = torch.utils.data.Subset(full_dataset, train_idx.tolist())
+        test_subset = torch.utils.data.Subset(full_dataset, test_idx.tolist())
 
         # --- Phenotype stats calculation (from train_original.py) ---
         if not args.test_only:
@@ -537,9 +542,9 @@ def k_fold_training(args, num_classes, full_dataset):
 
         if not args.test_only:
             if hasattr(model, "phenotype_means") and args.phenotype_means is not None:
-                model.phenotype_means = args.phenotype_means.unsqueeze(0).type_as(model.phenotype_means)
+                model.phenotype_means = args.phenotype_means.unsqueeze(0).type_as(model.phenotype_means) # type: ignore
             if hasattr(model, "phenotype_stds") and args.phenotype_stds is not None:
-                model.phenotype_stds = args.phenotype_stds.unsqueeze(0).type_as(model.phenotype_means)
+                model.phenotype_stds = args.phenotype_stds.unsqueeze(0).type_as(model.phenotype_means) # type: ignore
 
         model.to(device)
         if args.distributed and args.sync_bn:
@@ -621,7 +626,7 @@ def k_fold_training(args, num_classes, full_dataset):
         for epoch in range(args.start_epoch, args.epochs):
             start_time_epoch = time.time()
             model.train()
-            if args.distributed:
+            if isinstance(train_sampler, torch.utils.data.DistributedSampler):
                 train_sampler.set_epoch(epoch)
             
             # --- Train ---
@@ -791,9 +796,12 @@ def k_fold_training(args, num_classes, full_dataset):
             with open(os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt"), "w") as f:
                 f.write(f"K-Fold Phenotype Regression Summary ({args.k_folds} folds\n...")
                 # ... (Phenotype file writing) ...
-            np.savez(os.path.join(args.output_dir, "kfold_phenotype_stats.npz"),
-                     aggregated_metrics=aggregated_pheno_results,
-                     all_fold_metrics=valid_pheno_metrics)
+            # Convert Python objects (dicts/lists) to object-dtype numpy arrays so np.savez accepts them
+            np.savez(
+                os.path.join(args.output_dir, "kfold_phenotype_stats.npz"),
+                aggregated_metrics=np.array(aggregated_pheno_results, dtype=object),
+                all_fold_metrics=np.array(valid_pheno_metrics, dtype=object),
+            )
     else:
         print("No Phenotype metrics collected from K-Folds.")
     
@@ -900,9 +908,9 @@ def standard_training_impl(config, args):
 
     if not args.test_only:
         if hasattr(model, "phenotype_means") and args.phenotype_means is not None:
-            model.phenotype_means = torch.as_tensor(args.phenotype_means).unsqueeze(0).type_as(model.phenotype_means)
+            model.phenotype_means = torch.as_tensor(args.phenotype_means).unsqueeze(0).type_as(model.phenotype_means) # type: ignore
         if hasattr(model, "phenotype_stds") and args.phenotype_stds is not None:
-            model.phenotype_stds = torch.as_tensor(args.phenotype_stds).unsqueeze(0).type_as(model.phenotype_stds)
+            model.phenotype_stds = torch.as_tensor(args.phenotype_stds).unsqueeze(0).type_as(model.phenotype_stds) # type: ignore
 
     model.to(device)
     if args.distributed and args.sync_bn:
@@ -1003,7 +1011,7 @@ def standard_training_impl(config, args):
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         start_time_epoch = time.time()
-        if args.distributed:
+        if isinstance(train_sampler, torch.utils.data.DistributedSampler):
             train_sampler.set_epoch(epoch)
         
         # --- Train ---
@@ -1214,9 +1222,8 @@ def run_single_seed(args, seed):
             sample_img, _ = eval_transform(ds_test[0][0], ds_test[0][1])
             device = torch.device(args.device)
             model_for_measure.to(device)
-            sample = sample_img.unsqueeze(0).to(device)
             
-            latency = measure_latency(model_for_measure, sample, device, warmup=args.latency_warmup, runs=args.latency_runs)
+            latency = measure_latency(model_for_measure, sample_img, device, warmup=args.latency_warmup, runs=args.latency_runs)
             run_summary['latency_ms'] = float(latency)
             print(f"Model Latency: {latency:.3f} ms")
         elif args.measure_latency and args.k_folds > 1:
