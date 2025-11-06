@@ -158,7 +158,12 @@ def _convert_metrics_to_serializable(item):
         return item.tolist()
     if hasattr(torch, 'Tensor') and isinstance(item, torch.Tensor):
         return item.tolist()
-    # Check for numpy scalar types
+    # Check for numpy scalar types (using more modern checks)
+    if isinstance(item, (np.float16, np.float32, np.float64)): # type: ignore
+        return float(item)
+    if isinstance(item, (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)): # type: ignore
+        return int(item)
+    # Fallback for other np.floating/np.integer types
     if isinstance(item, np.floating):
         return float(item)
     if isinstance(item, np.integer):
@@ -310,8 +315,6 @@ def get_args_parser(add_help=True):
     parser.add_argument("--sync-bn", dest="sync_bn", action="store_true")
     parser.add_argument("--test-only", dest="test_only", action="store_true")
     parser.add_argument("--use-deterministic-algorithms", action="store_true")
-    parser.add_argument("--world-size", default=1, type=int)
-    parser.add_argument("--dist-url", default="env://", type=str)
     parser.add_argument("--weights", default=None, type=str)
     parser.add_argument("--weights-backbone", default=None, type=str)
     parser.add_argument("--saved-weights", default=None, type=str)
@@ -338,8 +341,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--tuning", action="store_true")
 
     # --- Experiment-tracking args from train.py ---
-    parser.add_argument("--seed", type=int, default=None, help="Single seed for reproducibility.")
-    parser.add_argument("--seeds", nargs="+", type=int, default=None, help="List of seeds for multi-seed runs.")
+    parser.add_argument("--seed", type=int, default=42, help="Single seed for reproducibility.")
     parser.add_argument("--measure-latency", action="store_true", help="Measure latency on best model.")
     parser.add_argument("--latency-warmup", type=int, default=50)
     parser.add_argument("--latency-runs", type=int, default=200)
@@ -392,10 +394,12 @@ def calculate_phenotype_stats(subset: torch.utils.data.Subset, phenotype_names: 
 def save_evaluator_summary(evaluator: CocoEvaluator, output_path: str):
     """Saves the summary from a CocoEvaluator to a file."""
     if not evaluator:
-        print(f"Warning: Attempted to save summary, but evaluator is None.")
+        if utils.is_main_process():
+            print(f"Warning: Attempted to save summary, but evaluator is None.")
         return
     if not utils.is_main_process():
         return
+    
     print(f"Saving evaluation summary to {output_path}")
     with open(output_path, "w") as f:
         with redirect_stdout(f):
@@ -416,7 +420,7 @@ def k_fold_training(args, num_classes, full_dataset):
     resume_fold_idx = -1
 
     if args.resume_kfold:
-        # ... (Resume logic from train_original.py) ...
+        # Scan for the last completed or in-progress fold
         for i in range(args.k_folds, 0, -1):
             fold_dir = os.path.join(args.output_dir, f"fold_{i}")
             checkpoint_path = os.path.join(fold_dir, "checkpoint.pth")
@@ -428,15 +432,19 @@ def k_fold_training(args, num_classes, full_dataset):
                     resume_fold_idx = i - 1
                 break
         if resume_fold_idx != -1:
-            print(f"--- Resuming K-Fold training. Starting from Fold {resume_fold_idx + 1} ---")
+            if utils.is_main_process():
+                print(f"--- Resuming K-Fold training. Starting from Fold {resume_fold_idx + 1} ---")
         else:
-            print("--- --resume-kfold specified, but no checkpoints found. Starting from scratch. ---")
+            if utils.is_main_process():
+                print("--- --resume-kfold specified, but no checkpoints found. Starting from scratch. ---")
 
-    print(f"Starting {args.k_folds}-Fold Cross-Validation")
+    if utils.is_main_process():
+        print(f"Starting {args.k_folds}-Fold Cross-Validation")
     for fold, (train_idx, test_idx) in enumerate(kf.split(full_dataset)):
         if fold < resume_fold_idx:
-            # ... (Skipping logic from train_original.py) ...
-            print(f"--- Skipping completed Fold {fold + 1} ---")
+            # Load results from this already-completed fold
+            if utils.is_main_process():
+                print(f"--- Skipping completed Fold {fold + 1} ---")
             fold_dir = os.path.join(args.output_dir, f"fold_{fold + 1}")
             results_path = os.path.join(fold_dir, "fold_results.npz")
             if os.path.exists(results_path):
@@ -445,12 +453,15 @@ def k_fold_training(args, num_classes, full_dataset):
                     fold_results[fold] = results_data['coco_stats']
                 if 'pheno_stats' in results_data and results_data['pheno_stats'].any():
                     fold_phenotype_metrics[fold] = results_data['pheno_stats'].item()
-                print(f"Loaded past results for Fold {fold + 1}")
+                if utils.is_main_process():
+                    print(f"Loaded past results for Fold {fold + 1}")
             else:
-                print(f"Warning: Could not find results file for skipped Fold {fold + 1} at {results_path}")
+                if utils.is_main_process():
+                    print(f"Warning: Could not find results file for skipped Fold {fold + 1} at {results_path}")
             continue
 
-        print(f"Fold {fold + 1}/{args.k_folds}")
+        if utils.is_main_process():
+            print(f"Fold {fold + 1}/{args.k_folds}")
 
         current_fold_output_dir = os.path.join(args.output_dir, f"fold_{fold + 1}")
         if args.output_dir:
@@ -459,10 +470,11 @@ def k_fold_training(args, num_classes, full_dataset):
         train_subset = torch.utils.data.Subset(full_dataset, train_idx.tolist())
         test_subset = torch.utils.data.Subset(full_dataset, test_idx.tolist())
 
-        # --- Phenotype stats calculation (from train_original.py) ---
+        # --- Phenotype stats calculation
         if not args.test_only:
-            print("-" * 50)
-            print(f"Handling phenotype statistics for Fold {fold + 1}:")
+            if utils.is_main_process():
+                print("-" * 50)
+                print(f"Handling phenotype statistics for Fold {fold + 1}:")
             args.phenotype_means, args.phenotype_stds, args.minimums, args.maximums = None, None, None, None
             phenotype_means, phenotype_stds, phenotype_mins, phenotype_maxs = calculate_phenotype_stats(
                 train_subset, args.phenotype_names, args.log_transform, args.workers, args
@@ -471,15 +483,16 @@ def k_fold_training(args, num_classes, full_dataset):
             args.phenotype_stds = phenotype_stds
             args.minimums = phenotype_mins
             args.maximums = phenotype_maxs
-            # ... (Reporting stats) ...
-            for i, name in enumerate(args.phenotype_names):
-                mean_str = f"Mean={args.phenotype_means[i]:.4f}" if args.phenotype_means is not None else "Mean=skipped"
-                std_str = f"Std={args.phenotype_stds[i]:.4f}" if args.phenotype_stds is not None else "Std=skipped"
-                min_str = f"Min={args.minimums[i]:.4f}" if args.minimums is not None else "Min=skipped"
-                max_str = f"Max={args.maximums[i]:.4f}" if args.maximums is not None else "Max=skipped"
-                print(f"    - {name}: {mean_str}, {std_str}, {min_str}, {max_str}")
+            
+            if utils.is_main_process():
+                for i, name in enumerate(args.phenotype_names):
+                    mean_str = f"Mean={args.phenotype_means[i]:.4f}" if args.phenotype_means is not None else "Mean=skipped"
+                    std_str = f"Std={args.phenotype_stds[i]:.4f}" if args.phenotype_stds is not None else "Std=skipped"
+                    min_str = f"Min={args.minimums[i]:.4f}" if args.minimums is not None else "Min=skipped"
+                    max_str = f"Max={args.maximums[i]:.4f}" if args.maximums is not None else "Max=skipped"
+                    print(f"    - {name}: {mean_str}, {std_str}, {min_str}, {max_str}")
 
-        # --- Dataloader setup (from train_original.py) ---
+        # --- Dataloader setup
         train_dataset_for_loader = custom_types.TransformedSubset(train_subset, get_transform(is_train=True, args=args))
         test_dataset_for_loader = custom_types.TransformedSubset(test_subset, get_transform(is_train=False, args=args))
         
@@ -491,12 +504,12 @@ def k_fold_training(args, num_classes, full_dataset):
             test_sampler = torch.utils.data.SequentialSampler(test_dataset_for_loader)
 
         if args.aspect_ratio_group_factor >= 0:
-            # ... (AspectRatio logic) ...
             try:
                 group_ids = create_aspect_ratio_groups(train_dataset_for_loader, k=args.aspect_ratio_group_factor)
                 train_batch_sampler = GroupedBatchSampler(train_sampler, group_ids, args.batch_size)
             except Exception as e:
-                print(f"Warning: Could not create aspect ratio groups... Using standard BatchSampler.")
+                if utils.is_main_process():
+                    print(f"Warning: Could not create aspect ratio groups... Using standard BatchSampler.")
                 train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size, drop_last=True)
         else:
             train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size, drop_last=True)
@@ -514,8 +527,9 @@ def k_fold_training(args, num_classes, full_dataset):
             collate_fn=utils.collate_fn
         )
 
-        # --- Model setup (from train_original.py) ---
-        print("Creating model")
+        # --- Model setup
+        if utils.is_main_process():
+            print("Creating model")
         kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
         if args.data_augmentation in ["multiscale", "lsj"]:
             kwargs["_skip_resize"] = True
@@ -536,9 +550,10 @@ def k_fold_training(args, num_classes, full_dataset):
             kwargs["maximums"] = args.maximums
 
         model = get_model(args.model, num_classes=num_classes, **kwargs)
-        # ... (Weight loading, SyncBN, DDP setup) ...
+        
         if args.saved_weights:
-            print("Loading saved weights: {}".format(args.saved_weights))
+            if utils.is_main_process():
+                print("Loading saved weights: {}".format(args.saved_weights))
             weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
             model.load_state_dict(weights)
 
@@ -559,13 +574,13 @@ def k_fold_training(args, num_classes, full_dataset):
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
             model_without_ddp = model.module
 
-        # --- Test-only logic (from train_original.py) ---
+        # --- Test-only logic
         if args.test_only:
             torch.backends.cudnn.deterministic = True
             evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
             continue
 
-        # --- Optimizer & Scheduler setup (from train_original.py) ---
+        # --- Optimizer & Scheduler setup
         if args.norm_weight_decay is None:
             parameters = [p for p in model.parameters() if p.requires_grad]
         else:
@@ -594,10 +609,9 @@ def k_fold_training(args, num_classes, full_dataset):
         else:
             raise RuntimeError(f"Invalid lr scheduler '{args.lr_scheduler}'.")
 
-        # --- Resume logic (from train_original.py) ---
+        # --- Resume logic
         args.start_epoch = 0
         if args.resume_kfold and fold == resume_fold_idx:
-            # ... (K-Fold resume logic) ...
             checkpoint_path = os.path.join(current_fold_output_dir, "checkpoint.pth")
             if os.path.exists(checkpoint_path):
                 checkpoint = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
@@ -607,9 +621,10 @@ def k_fold_training(args, num_classes, full_dataset):
                 args.start_epoch = checkpoint["epoch"] + 1
                 if scaler and "scaler" in checkpoint:
                     scaler.load_state_dict(checkpoint["scaler"])
-                print(f"--- Successfully resumed Fold {fold + 1} from Epoch {args.start_epoch} ---")
+                if utils.is_main_process():
+                    print(f"--- Successfully resumed Fold {fold + 1} from Epoch {args.start_epoch} ---")
 
-        # --- NEW: CSV Logging & Val-Loss setup ---
+        # --- CSV Logging & Val-Loss setup ---
         epoch_csv_path = os.path.join(current_fold_output_dir, "epoch_log.csv")
         write_header = not os.path.exists(epoch_csv_path) or args.start_epoch == 0
         csv_file = open(epoch_csv_path, "a", newline="")
@@ -620,9 +635,10 @@ def k_fold_training(args, num_classes, full_dataset):
         best_val_loss = float('inf')
         best_epoch = -1
         val_history = {}
-        # --- End New Setup ---
+        # --- End Setup ---
 
-        print(f"Start training for Fold {fold + 1}")
+        if utils.is_main_process():
+            print(f"Start training for Fold {fold + 1}")
         start_time = time.time()
         last_epoch_evaluator = None
         for epoch in range(args.start_epoch, args.epochs):
@@ -636,7 +652,7 @@ def k_fold_training(args, num_classes, full_dataset):
             train_time_s = time.time() - start_time_epoch
             lr_scheduler.step()
 
-            # --- NEW: Compute Validation Loss ---
+            # --- Compute Validation Loss ---
             if not args.no_validate:
                 val_loss, val_components = compute_validation_loss(model, data_loader_test, device, print_freq=args.print_freq)
             else:
@@ -649,24 +665,30 @@ def k_fold_training(args, num_classes, full_dataset):
                 best_epoch = epoch
                 is_best = True
                 
-                # --- SAVE ONLY IF BEST ---
-                if current_fold_output_dir:
-                    checkpoint = {
-                        "model": model_without_ddp.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "lr_scheduler": lr_scheduler.state_dict(),
-                        "args": args,
-                        "epoch": epoch,
-                        "fold": fold + 1,
-                        "val_loss": val_loss
-                    }
-                    if scaler:
-                        checkpoint["scaler"] = scaler.state_dict()
-                    
-                    # Save the new best checkpoint (for resuming)
-                    utils.save_on_master(checkpoint, os.path.join(current_fold_output_dir, "checkpoint.pth"))
-                    
-                    # Save the permanent "best_by_val" copy
+            # --- Checkpoint Saving ---
+            if current_fold_output_dir:
+                # 1. Create the checkpoint dictionary
+                checkpoint = {
+                    "model": model_without_ddp.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "lr_scheduler": lr_scheduler.state_dict(),
+                    "args": args,
+                    "epoch": epoch, # <-- This is the *current* epoch
+                    "fold": fold + 1,
+                    "val_loss": val_loss
+                }
+                if scaler:
+                    checkpoint["scaler"] = scaler.state_dict()
+                
+                # 2. Save the LATEST checkpoint (for resuming)
+                if utils.is_main_process():
+                    checkpoint_path = os.path.join(current_fold_output_dir, "checkpoint.pth")
+                    tmp_path = checkpoint_path + ".tmp"
+                    torch.save(checkpoint, tmp_path)
+                    os.rename(tmp_path, checkpoint_path) # Atomic move
+                
+                # 3. Save the BEST checkpoint (for measurement) if this epoch is the best
+                if is_best:
                     if utils.is_main_process():
                         try:
                             shutil.copyfile(os.path.join(current_fold_output_dir, "checkpoint.pth"),
@@ -674,7 +696,7 @@ def k_fold_training(args, num_classes, full_dataset):
                         except Exception as e:
                             print(f"Warning: copying best checkpoint failed: {e}")
 
-            # --- Evaluate (from train_original.py) ---
+            # --- Evaluate
             evaluator: CocoEvaluator = evaluate(model, data_loader_test, device=device,
                                                 phenotype_names=args.phenotype_names)
             last_epoch_evaluator = evaluator
@@ -688,7 +710,7 @@ def k_fold_training(args, num_classes, full_dataset):
                 if evaluator.phenotype_metrics_results:
                     fold_phenotype_metrics[fold] = evaluator.phenotype_metrics_results
 
-            # --- NEW: CSV Logging ---
+            # --- CSV Logging ---
             eval_metrics_dict = get_eval_metrics_dict(evaluator)
             if utils.is_main_process():
                 csv_writer.writerow([
@@ -704,13 +726,13 @@ def k_fold_training(args, num_classes, full_dataset):
 
         # --- End Epoch Loop ---
 
-        # --- NEW: Save val_history and close CSV ---
+        # --- Save val_history and close CSV ---
         if utils.is_main_process():
             csv_file.close()
             with open(os.path.join(current_fold_output_dir, "val_loss_history.json"), "w") as f:
                 json.dump(val_history, f, indent=2)
 
-        # --- Post-Fold Summary (from train_original.py) ---
+        # --- Post-Fold Summary
         if last_epoch_evaluator and args.output_dir:
             summary_file_path = os.path.join(current_fold_output_dir, "evaluation_summary.txt")
             save_evaluator_summary(last_epoch_evaluator, summary_file_path)
@@ -725,28 +747,39 @@ def k_fold_training(args, num_classes, full_dataset):
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        print(f"Training time {total_time_str}")
+        if utils.is_main_process():
+            print(f"Training time {total_time_str}")
 
     # --- End Fold Loop ---
 
-    # --- K-Fold Aggregate Reporting (from train_original.py) ---
+    # --- K-Fold Aggregate Reporting ---
     if any(res is not None for res in fold_results):
-        # ... (COCO metric aggregation) ...
+        # --- COCO metric aggregation
         valid_fold_stats = [stats for stats in fold_results if stats is not None and len(stats) > 0]
         if valid_fold_stats:
             all_fold_stats_np = np.array(valid_fold_stats)
             mean_stats = np.mean(all_fold_stats_np, axis=0)
             std_stats = np.std(all_fold_stats_np, axis=0)
-            print("Average K-Fold Performance Metrics (based on last epoch of each fold):")
+            if utils.is_main_process():
+                print("Average K-Fold Performance Metrics (based on last epoch of each fold):")
             metric_names = [
                 "Average Precision  (AP) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
                 "Average Precision  (AP) @[ IoU=0.50      |area=    all| maxDets=100 ]",
-                # ... (all metric names) ...
+                "Average Precision  (AP) @[ IoU=0.75      |area=    all| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
+                "Average Precision  (AP) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=  1 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets= 10 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=    all| maxDets=100 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  small| maxDets=100 ]",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 |area= medium| maxDets=100 ]",
                 "Average Recall     (AR) @[ IoU=0.50:0.95 |area=  large| maxDets=100 ]",
             ]
-            for i, name in enumerate(metric_names):
-                if i < len(mean_stats):
-                    print(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}")
+            if utils.is_main_process():
+                for i, name in enumerate(metric_names):
+                    if i < len(mean_stats):
+                        print(f"  {name}: Mean = {mean_stats[i]:.4f}, Std = {std_stats[i]:.4f}")
 
             if args.output_dir and utils.is_main_process():
                 results_file = os.path.join(args.output_dir, "kfold_summary_stats.txt")
@@ -760,13 +793,16 @@ def k_fold_training(args, num_classes, full_dataset):
                              std_stats=std_stats, all_fold_stats=all_fold_stats_np)
                 print(f"K-Fold summary saved to {results_file}")
         else:
-            print("No valid stats collected from folds to average.")
+            if utils.is_main_process():
+                print("No valid stats collected from folds to average.")
     else:
-        print("No results collected from K-Folds.")
+        if utils.is_main_process():
+            print("No results collected from K-Folds.")
 
+    # --- Phenotype metric aggregation
     if any(res is not None for res in fold_phenotype_metrics):
-        # ... (Phenotype metric aggregation) ...
-        print("Average K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
+        if utils.is_main_process():
+            print("Average K-Fold Phenotype Regression Metrics (based on last epoch of each fold):")
         aggregated_pheno_results = {}
         phenotype_keys = args.phenotype_names
         metric_keys = ["r2", "rmse", "mape"]
@@ -787,19 +823,23 @@ def k_fold_training(args, num_classes, full_dataset):
                     std_val = np.std(values)
                     aggregated_pheno_results[p_key][f'{m_key}_mean'] = mean_val
                     aggregated_pheno_results[p_key][f'{m_key}_std'] = std_val
-                    if m_key == 'mape':
-                        print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%")
-                    else:
-                        print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val:.4f}, Std = {std_val:.4f}")
+                    if utils.is_main_process():
+                        if m_key == 'mape':
+                            print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val * 100:.2f}%, Std = {std_val * 100:.2f}%")
+                        else:
+                            print(f"  {p_key:<15} {m_key:<10}: Mean = {mean_val:.4f}, Std = {std_val:.4f}")
                 else:
                     aggregated_pheno_results[p_key][f'{m_key}_mean'] = np.nan
                     aggregated_pheno_results[p_key][f'{m_key}_std'] = np.nan
-                    print(f"  {p_key:<15} {m_key:<10}: Not enough valid data across folds.")
+                    if utils.is_main_process():
+                        print(f"  {p_key:<15} {m_key:<10}: Not enough valid data across folds.")
         
         if args.output_dir and utils.is_main_process():
-            with open(os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt"), "w") as f:
-                f.write(f"K-Fold Phenotype Regression Summary ({args.k_folds} folds\n...")
-                # ... (Phenotype file writing) ...
+            summary_path = os.path.join(args.output_dir, "kfold_summary_phenotype_stats.txt")
+            with open(summary_path, "w") as f:
+                f.write(f"K-Fold Phenotype Regression Summary ({args.k_folds} folds)\n")
+                json.dump(aggregated_pheno_results, f, indent=2)
+
             # Convert Python objects (dicts/lists) to object-dtype numpy arrays so np.savez accepts them
             np.savez(
                 os.path.join(args.output_dir, "kfold_phenotype_stats.npz"),
@@ -807,25 +847,25 @@ def k_fold_training(args, num_classes, full_dataset):
                 all_fold_metrics=np.array(valid_pheno_metrics, dtype=object),
             )
     else:
-        print("No Phenotype metrics collected from K-Folds.")
+        if utils.is_main_process():
+            print("No Phenotype metrics collected from K-Folds.")
     
-    # K-Fold training doesn't return a single "best model",
-    # so we return None. The orchestration wrapper will handle this.
+    # K-Fold training doesn't return a single "best model"
     return None
 
 
 def standard_training_impl(args):
     """
-    Modified Standard training loop (from train_original.py).
+    Standard training loop.
     Integrates CSV logging and best-by-validation-loss checkpointing.
     Returns a dict with results for the orchestration wrapper.
     """
     device = torch.device(args.device)
 
-    # --- Data setup (CRITICAL logic from train_original.py) ---
+    # --- Data setup
     calculated_means, calculated_stds, calculated_mins, calculated_maxs = None, None, None, None
     kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers, "weights": args.weights}
-    # ... (all model kwargs setup) ...
+    
     if args.data_augmentation in ["multiscale", "lsj"]:
         kwargs["_skip_resize"] = True
     if "rcnn" in args.model:
@@ -844,14 +884,16 @@ def standard_training_impl(args):
         kwargs["maximums"] = args.maximums
 
     if args.val_split and 0 < args.val_split < 1:
-        # --- This is the CORRECT val-split logic ---
-        print(f"Train-validation split enabled. Using {args.val_split:.0%} for validation.")
+        # Use a validation split from the training set
+        if utils.is_main_process():
+            print(f"Train-validation split enabled. Using {args.val_split:.0%} for validation.")
         full_dataset, num_classes = get_dataset(is_train=True, args=args, no_transform=True)
 
         dataset_size = len(full_dataset)
         val_size = int(args.val_split * dataset_size)
         train_size = dataset_size - val_size
-        print(f"Splitting dataset: {train_size} training images, {val_size} validation images.")
+        if utils.is_main_process():
+            print(f"Splitting dataset: {train_size} training images, {val_size} validation images.")
 
         train_subset, val_subset = torch.utils.data.random_split(
             full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42)
@@ -860,8 +902,9 @@ def standard_training_impl(args):
         if not args.test_only:
             # Calculate stats ONLY on train_subset
             if not (args.skip_mean_calc and args.skip_std_calc and args.skip_min_calc and args.skip_max_calc):
-                print("-" * 50)
-                print("Calculating phenotype statistics for the training split...")
+                if utils.is_main_process():
+                    print("-" * 50)
+                    print("Calculating phenotype statistics for the training split...")
                 calculated_means, calculated_stds, calculated_mins, calculated_maxs = calculate_phenotype_stats(
                     train_subset, args.phenotype_names, args.log_transform, args.workers, args
                 )
@@ -874,13 +917,14 @@ def standard_training_impl(args):
             if args.minimums is not None: kwargs["minimums"] = args.minimums
             if args.maximums is not None: kwargs["maximums"] = args.maximums
 
-            print("Phenotype statistics in use for this run:")
-            for i, name in enumerate(args.phenotype_names):
-                mean_str = f"Mean={args.phenotype_means[i]:.4f}" if args.phenotype_means is not None else "Mean=unused"
-                std_str = f"Std={args.phenotype_stds[i]:.4f}" if args.phenotype_stds is not None else "Std=unused"
-                min_str = f"Min={args.minimums[i]:.4f}" if args.minimums is not None else "Min=unused"
-                max_str = f"Max={args.maximums[i]:.4f}" if args.maximums is not None else "Max=unused"
-                print(f"    - {name}: {mean_str}, {std_str}, {min_str}, {max_str}")
+            if utils.is_main_process():
+                print("Phenotype statistics in use for this run:")
+                for i, name in enumerate(args.phenotype_names):
+                    mean_str = f"Mean={args.phenotype_means[i]:.4f}" if args.phenotype_means is not None else "Mean=unused"
+                    std_str = f"Std={args.phenotype_stds[i]:.4f}" if args.phenotype_stds is not None else "Std=unused"
+                    min_str = f"Min={args.minimums[i]:.4f}" if args.minimums is not None else "Min=unused"
+                    max_str = f"Max={args.maximums[i]:.4f}" if args.maximums is not None else "Max=unused"
+                    print(f"    - {name}: {mean_str}, {std_str}, {min_str}, {max_str}")
 
         # Apply DIFFERENT transforms to train and val
         dataset = custom_types.TransformedSubset(
@@ -891,21 +935,24 @@ def standard_training_impl(args):
         )
     else:
         # Standard logic: load separate train/val
-        print("Loading separate train and validation datasets.")
+        if utils.is_main_process():
+            print("Loading separate train and validation datasets.")
         dataset, num_classes = get_dataset(is_train=True, args=args)
         dataset_test, _ = get_dataset(is_train=False, args=args)
-        # ... (phenotype args passed directly) ...
+        
         if args.phenotype_means:
             kwargs["phenotype_means"] = args.phenotype_means
         if args.phenotype_stds:
             kwargs["phenotype_stds"] = args.phenotype_stds
 
-    # --- Model setup (from train_original.py) ---
-    print("Creating model")
+    # --- Model setup
+    if utils.is_main_process():
+        print("Creating model")
     model = get_model(args.model, num_classes=num_classes, **kwargs)
-    # ... (Weight loading, SyncBN, DDP setup) ...
+    
     if args.saved_weights:
-        print("Loading saved weights: {}".format(args.saved_weights))
+        if utils.is_main_process():
+            print("Loading saved weights: {}".format(args.saved_weights))
         weights = torch.load(args.saved_weights, map_location="cpu", weights_only=False)["model"]
         model.load_state_dict(weights)
 
@@ -926,7 +973,7 @@ def standard_training_impl(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
-    # --- Optimizer & Scheduler setup (from train_original.py) ---
+    # --- Optimizer & Scheduler setup
     if args.norm_weight_decay is None:
         parameters = [p for p in model.parameters() if p.requires_grad]
     else:
@@ -955,8 +1002,9 @@ def standard_training_impl(args):
     else:
         raise RuntimeError(f"Invalid lr scheduler '{args.lr_scheduler}'.")
 
-    # --- Dataloader setup (from train_original.py) ---
-    print("Creating data loaders")
+    # --- Dataloader setup
+    if utils.is_main_process():
+        print("Creating data loaders")
     if args.distributed:
         train_sampler = torch.utils.data.DistributedSampler(dataset)
         test_sampler = torch.utils.data.DistributedSampler(dataset_test)
@@ -980,10 +1028,12 @@ def standard_training_impl(args):
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers,
-        collate_fn=utils.collate_fn) # Note: was train_collate_fn in original, fixed to utils.collate_fn
+        collate_fn=utils.collate_fn)
 
+    # --- Resume logic
     if args.resume_path:
-        print(f"--- Resuming from specific path: {args.resume_path} ---")
+        if utils.is_main_process():
+            print(f"--- Resuming from specific path: {args.resume_path} ---")
         checkpoint = torch.load(args.resume_path, map_location="cpu", weights_only=False)
         model_without_ddp.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -992,12 +1042,13 @@ def standard_training_impl(args):
         if scaler and "scaler" in checkpoint:
             scaler.load_state_dict(checkpoint["scaler"])
 
+    # --- Test-only logic
     if args.test_only:
         torch.backends.cudnn.deterministic = True
         evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
         return {"best_checkpoint": None, "param_count": count_parameters(model_without_ddp)}
 
-    # --- NEW: CSV Logging & Val-Loss setup ---
+    # --- CSV Logging & Val-Loss setup ---
     epoch_csv_path = os.path.join(args.output_dir, "epoch_log.csv")
     write_header = not os.path.exists(epoch_csv_path) or args.start_epoch == 0
     csv_file = open(epoch_csv_path, "a", newline="")
@@ -1008,9 +1059,10 @@ def standard_training_impl(args):
     best_val_loss = float('inf')
     best_epoch = -1
     val_history = {}
-    # --- End New Setup ---
+    # --- End Setup ---
 
-    print("Starting standard training (K-Fold is disabled or k_folds <= 1).")
+    if utils.is_main_process():
+        print("Starting standard training (K-Fold is disabled or k_folds <= 1).")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         start_time_epoch = time.time()
@@ -1022,7 +1074,7 @@ def standard_training_impl(args):
         train_time_s = time.time() - start_time_epoch
         lr_scheduler.step()
         
-        # --- NEW: Compute Validation Loss ---
+        # --- Compute Validation Loss ---
         if not args.no_validate:
             val_loss, val_components = compute_validation_loss(model, data_loader_test, device, print_freq=args.print_freq)
         else:
@@ -1035,23 +1087,29 @@ def standard_training_impl(args):
             best_epoch = epoch
             is_best = True
 
-            # --- SAVE ONLY IF BEST ---
-            if args.output_dir:
-                checkpoint = {
-                    "model": model_without_ddp.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "lr_scheduler": lr_scheduler.state_dict(),
-                    "args": args,
-                    "epoch": epoch,
-                    "val_loss": val_loss
-                }
-                if scaler:
-                    checkpoint["scaler"] = scaler.state_dict()
-                
-                # Save the new best checkpoint (for resuming)
-                utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-
-                # Save the permanent "best_by_val" copy
+        # --- Checkpoint Saving ---
+        if args.output_dir:
+            # 1. Create the checkpoint dictionary
+            checkpoint = {
+                "model": model_without_ddp.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "lr_scheduler": lr_scheduler.state_dict(),
+                "args": args,
+                "epoch": epoch, # <-- This is the *current* epoch
+                "val_loss": val_loss
+            }
+            if scaler:
+                checkpoint["scaler"] = scaler.state_dict()
+            
+            # 2. Save the LATEST checkpoint (for resuming)
+            if utils.is_main_process():
+                checkpoint_path = os.path.join(args.output_dir, "checkpoint.pth")
+                tmp_path = checkpoint_path + ".tmp"
+                torch.save(checkpoint, tmp_path)
+                os.rename(tmp_path, checkpoint_path) # Atomic move
+            
+            # 3. Save the BEST checkpoint (for measurement) if this epoch is the best
+            if is_best:
                 if utils.is_main_process():
                     try:
                         shutil.copyfile(os.path.join(args.output_dir, "checkpoint.pth"),
@@ -1062,7 +1120,7 @@ def standard_training_impl(args):
         # --- Evaluate ---
         evaluator = evaluate(model, data_loader_test, device=device, phenotype_names=args.phenotype_names)
         
-        # --- NEW: CSV Logging ---
+        # --- CSV Logging ---
         eval_metrics_dict = get_eval_metrics_dict(evaluator)
         if utils.is_main_process():
             csv_writer.writerow([
@@ -1078,7 +1136,7 @@ def standard_training_impl(args):
     
     # --- End Epoch Loop ---
 
-    # --- NEW: Save val_history and close CSV ---
+    # --- Save val_history and close CSV ---
     if utils.is_main_process():
         csv_file.close()
         with open(os.path.join(args.output_dir, "val_loss_history.json"), "w") as f:
@@ -1086,7 +1144,8 @@ def standard_training_impl(args):
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print(f"Training time {total_time_str}")
+    if utils.is_main_process():
+        print(f"Training time {total_time_str}")
 
     best_ckpt_path = os.path.join(args.output_dir, "model_best_by_val.pth")
     return {
@@ -1114,10 +1173,10 @@ def args_sanity_check(args):
     if args.output_dir:
         utils.mkdir(args.output_dir)
 
-    utils.print_on_master("--- Arguments ---")
     if utils.is_main_process():
+        print("--- Arguments ---")
         pprint.pprint(vars(args))
-    utils.print_on_master("-----------------")
+        print("-----------------")
 
 
 def init_dist_args(args):
@@ -1127,94 +1186,117 @@ def init_dist_args(args):
 
 
 # ------------------------------------------------------------
-# Orchestration functions (from train.py, modified)
+# Entrypoint
 # ------------------------------------------------------------
 
-def run_single_seed(args, seed):
-    """
-    Runs a single training experiment for a given seed.
-    Handles setup, calling the correct training loop, and post-run measurement.
-    """
-    if seed is not None:
-        utils.print_on_master(f"Setting Seed: {seed}")
-        set_seed(seed)
-    
-    run_tag = f"seed-{seed}" if seed is not None else "seed-none"
-    run_output = os.path.join(args.output_dir, run_tag)
-    utils.mkdir(run_output)
-    
-    # CRITICAL: Set args.output_dir to the seed-specific path
-    args.output_dir = run_output
+def main():
+    args = get_args_parser().parse_args()
 
-    run_summary = {"seed": seed, "output_dir": args.output_dir}
-    checkpoint_path = os.path.join(run_output, "checkpoint.pth")
-    results_json_path = os.path.join(run_output, "run_results.json")
+    # --- 1. Initialize Distributed Mode FIRST ---
+    # This will read env vars from torchrun (RANK, LOCAL_RANK, WORLD_SIZE)
+    # and set args.distributed = True, args.gpu = LOCAL_RANK
+    init_dist_args(args)
 
+    # --- 2. Set Device based on distributed rank ---
+    if args.distributed:
+        # Each process gets its own GPU
+        args.device = f"cuda:{args.gpu}"
+        if utils.is_main_process():
+            print(f"--- Running Distributed Training on {args.world_size} GPUs ---")
+    else:
+        if utils.is_main_process():
+            print(f"--- Running Standard Training on {args.device} ---")
+    device = torch.device(args.device)
+
+    # --- 3. Set Seed ---
+    # All processes must get the *same* seed.
+    if utils.is_main_process():
+        print(f"\n--- Setting Seed: {args.seed} ---")
+    set_seed(args.seed) # This must be called on all processes
+
+    # --- 4. Setup Output Dir ---
+    # We assume output_dir is the *base* dir for this experiment.
+    if args.output_dir:
+        utils.mkdir(args.output_dir)
+
+    # --- 5. Snapshot args (only main process) ---
+    snap = copy(vars(args))
+    if utils.is_main_process():
+        with open(os.path.join(args.output_dir, "args.json"), "w") as f:
+            json.dump(snap, f, indent=2, default=str)
+
+    # --- 6. Sanity Check & Load Data (only main process prints) ---
+    if utils.is_main_process():
+        args_sanity_check(args)
+        print("Loading data")
+
+    run_summary = {"seed": args.seed, "output_dir": args.output_dir}
+    train_results = {}
+    num_classes = 2 # Default, will be updated by dataset
+    
+    # --- 7. Handle Resume Logic ---
+    checkpoint_path = os.path.join(args.output_dir, "checkpoint.pth")
+    results_json_path = os.path.join(args.output_dir, "run_results.json")
+    
     # K-Fold has its own --resume-kfold flag, so this logic is for standard runs.
     if args.resume and not args.k_folds > 1:
         if os.path.exists(checkpoint_path):
-            utils.print_on_master(f"Found checkpoint for seed {seed}: {checkpoint_path}")
+            if utils.is_main_process():
+                print(f"Found checkpoint for seed {args.seed}: {checkpoint_path}")
             try:
+                # All processes must load checkpoint to sync
                 checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
                 last_epoch = checkpoint["epoch"]
                 
                 # Check if the run is already finished
                 if last_epoch == args.epochs - 1:
-                    utils.print_on_master(f"Skipping Seed {seed}: Training already complete.")
-                    # Try to load the final results if they exist
-                    if os.path.exists(results_json_path):
-                        utils.print_on_master("Loading saved results.")
+                    if utils.is_main_process():
+                        print(f"--- Skipping Seed {args.seed}: Training already complete. ---")
+                    if os.path.exists(results_json_path) and utils.is_main_process():
+                        print("Loading saved results.")
                         with open(results_json_path, "r") as f:
                             run_summary = json.load(f)
-                    return run_summary # Skip this seed entirely
+                    return # Exit the script
                 else:
                     # Run is incomplete, set the resume_path to continue
-                    utils.print_on_master(f"Resuming Seed {seed} from Epoch {last_epoch + 1}")
+                    if utils.is_main_process():
+                        print(f"--- Resuming Seed {args.seed} from Epoch {last_epoch + 1} ---")
                     args.resume_path = checkpoint_path # Pass the path to standard_training_impl
-            
             except Exception as e:
-                utils.print_on_master(f"Warning: Could not load checkpoint {checkpoint_path} for seed {seed}. Retrying from scratch. Error: {e}")
+                if utils.is_main_process():
+                    print(f"Warning: Could not load checkpoint {checkpoint_path} for seed {args.seed}. Retrying from scratch. Error: {e}")
         else:
-            utils.print_on_master(f"No checkpoint found for seed {seed}. Starting from scratch.")
-
-    # Snapshot args
-    snap = copy(vars(args))
-    snap['seed'] = seed
-    if utils.is_main_process():
-        with open(os.path.join(run_output, "args.json"), "w") as f:
-            json.dump(snap, f, indent=2, default=str)
-
-    # --- Run core logic from original main() ---
-    args_sanity_check(args)
-    init_dist_args(args)
-    utils.print_on_master("Loading data")
+            if utils.is_main_process():
+                print(f"--- No checkpoint found for seed {args.seed}. Starting from scratch. ---")
     
-    train_results = {}
-    num_classes = 2 # Default, will be updated
-
+    # --- 8. Run Training ---
     try:
         if args.k_folds > 1:
+            if args.distributed and utils.is_main_process():
+                print("Warning: K-Fold training with DDP is complex and may lead to issues.")
             dataset, num_classes = get_dataset(is_train=True, args=args, no_transform=True)
             k_fold_training(args, num_classes, dataset)
             # K-fold saves its own aggregate results, no single "best" model
             kfold_summary_file = os.path.join(args.output_dir, "kfold_summary_stats.txt")
             run_summary['kfold_summary_file'] = kfold_summary_file
         else:
-            # Pass empty config dict (for `tune` compatibility) and args
             train_results = standard_training_impl(args)
             run_summary.update(train_results)
             num_classes = train_results.get("num_classes", num_classes)
 
     except Exception as e:
-        utils.print_on_master(f"!!! Training run for seed {seed} failed: {e} !!!")
+        if utils.is_main_process():
+            print(f"!!! Training run for seed {args.seed} failed: {e} !!!")
         import traceback
         traceback.print_exc()
         run_summary["error"] = str(e)
-        return run_summary
+        return # Exit
     # --- End core logic ---
 
-    # --- Post-run measurement (param count & latency) ---
-    utils.print_on_master("--- Post-Run Measurement ---")
+    # --- 9. Post-Run Measurement ---
+    if utils.is_main_process():
+        print("--- Post-Run Measurement ---")
+    
     best_ckpt_path = run_summary.get("best_checkpoint")
     
     # Re-build model kwargs to instantiate model for measurement
@@ -1235,113 +1317,55 @@ def run_single_seed(args, seed):
         kwargs["minimums"] = args.minimums
     if args.maximums:
         kwargs["maximums"] = args.maximums
+    kwargs["device"] = device # Add device for model instantiation
 
     try:
         model_for_measure = get_model(args.model, num_classes=num_classes, **kwargs)
         param_count = count_parameters(model_for_measure)
         run_summary['param_count'] = int(param_count)
-        utils.print_on_master(f"Model Parameters (trainable): {param_count}")
+        if utils.is_main_process():
+            print(f"Model Parameters (trainable): {param_count}")
 
         if best_ckpt_path and os.path.exists(best_ckpt_path):
-            utils.print_on_master(f"Loading best checkpoint for measurement: {best_ckpt_path}")
+            if utils.is_main_process():
+                print(f"Loading best checkpoint for measurement: {best_ckpt_path}")
+            
+            # Measurement only happens on main process, so no need for DDP model
             chk = torch.load(best_ckpt_path, map_location="cpu", weights_only=False)
             model_for_measure.load_state_dict(chk["model"])
             if 'val_loss' in chk:
                 run_summary['val_loss'] = float(chk['val_loss'])
-        elif args.k_folds <= 1:
-            utils.print_on_master("Warning: No 'model_best_by_val.pth' found. Latency measurement will use initialized weights.")
+        elif args.k_folds <= 1 and utils.is_main_process():
+            print("Warning: No 'model_best_by_val.pth' found. Latency measurement will use initialized weights.")
 
-        if args.measure_latency and args.k_folds <= 1:
+        # Latency is a single-process (rank 0) measurement
+        if args.measure_latency and args.k_folds <= 1 and utils.is_main_process():
             ds_test, _ = get_dataset(is_train=False, args=args, no_transform=True)
             eval_transform = get_transform(is_train=False, args=args)
             sample_img, _ = eval_transform(ds_test[0][0], ds_test[0][1])
-            device = torch.device(args.device)
-            model_for_measure.to(device)
+            model_for_measure.to(device) # device is already rank-specific
             
             latency = measure_latency(model_for_measure, sample_img, device, warmup=args.latency_warmup, runs=args.latency_runs)
             run_summary['latency_ms'] = float(latency)
-            utils.print_on_master(f"Model Latency: {latency:.3f} ms")
-        elif args.measure_latency and args.k_folds > 1:
-            utils.print_on_master("Skipping latency measurement for K-Fold run (no single best model).")
+            print(f"Model Latency: {latency:.3f} ms")
+        elif args.measure_latency and args.k_folds > 1 and utils.is_main_process():
+            print("Skipping latency measurement for K-Fold run (no single best model).")
 
     except Exception as e:
-        utils.print_on_master(f"Post-run measurement failed: {e}")
+        if utils.is_main_process():
+            print(f"Post-run measurement failed: {e}")
         run_summary["measurement_error"] = str(e)
 
+    # --- 10. Save Final Results (only main process) ---
     if args.save_metrics and utils.is_main_process():
         results_path = os.path.join(args.output_dir, "run_results.json")
         with open(results_path, "w") as f:
             json.dump(run_summary, f, indent=2, default=str)
-        utils.print_on_master(f"Run summary saved to {results_path}")
-
-    return run_summary
-
-
-def run_experiments(args):
-    """
-    Orchestrates multiple experimental runs based on --seed or --seeds.
-    Aggregates results.
-    """
-    # Save the base output dir *before* it's modified by run_single_seed
-    base_output_dir = os.path.abspath(args.output_dir)
-    utils.mkdir(base_output_dir)
-
-    # Determine seeds
-    if args.seeds:
-        seeds = args.seeds
-    elif args.seed is not None:
-        seeds = [args.seed]
-    else:
-        seeds = [None] # Single run with no specified seed
-
-    all_runs = []
-    for s in seeds:
-        # CRITICAL: Create a copy of args for each run
-        # This prevents args.output_dir from being permanently modified
-        args_copy = copy(args)
-        args_copy.output_dir = base_output_dir # Reset to base dir for each run
-        
-        utils.print_on_master(f"\n\n--- Running Experiment for Seed: {s} ---")
-        res = run_single_seed(args_copy, s)
-        all_runs.append(res)
-
-    # Aggregate results if multiple seeds
-    if len(all_runs) > 1:
-        utils.print_on_master("\n\n--- Aggregate Results ---")
-        aggregate = {"runs": len(all_runs), "seeds": [r.get("seed") for r in all_runs]}
-        lat_list = [r.get("latency_ms") for r in all_runs if r.get("latency_ms") is not None]
-        p_list = [r.get("param_count") for r in all_runs if r.get("param_count") is not None]
-        val_list = [r.get("val_loss") for r in all_runs if r.get("val_loss") is not None and not np.isnan(r.get("val_loss"))]
-
-        if lat_list:
-            aggregate['latency_mean_ms'] = float(np.mean(lat_list))
-            aggregate['latency_std_ms'] = float(np.std(lat_list))
-            utils.print_on_master(f"Latency (ms): Mean={aggregate['latency_mean_ms']:.3f}, Std={aggregate['latency_std_ms']:.3f}")
-        if p_list:
-            aggregate['param_count_mean'] = float(np.mean(p_list))
-            utils.print_on_master(f"Param Count:  Mean={aggregate['param_count_mean']:.0f}")
-        if val_list:
-            aggregate['val_loss_mean'] = float(np.mean(val_list))
-            aggregate['val_loss_std'] = float(np.std(val_list))
-            utils.print_on_master(f"Val Loss:     Mean={aggregate['val_loss_mean']:.6f}, Std={aggregate['val_loss_std']:.6f}")
-
         if utils.is_main_process():
-            agg_path = os.path.join(base_output_dir, "aggregate_results.json")
-            with open(agg_path, "w") as f:
-                json.dump({"aggregate": aggregate, "runs": all_runs}, f, indent=2, default=str)
-            utils.print_on_master(f"Saved aggregate summary to {agg_path}")
-
-    return all_runs
-
-
-# ------------------------------------------------------------
-# Entrypoint
-# ------------------------------------------------------------
-
-def main():
-    args = get_args_parser().parse_args()
-    run_experiments(args)
-    utils.print_on_master("All runs complete.")
+            print(f"Run summary saved to {results_path}")
+    
+    if utils.is_main_process():
+        print("All runs complete.")
 
 
 if __name__ == "__main__":
