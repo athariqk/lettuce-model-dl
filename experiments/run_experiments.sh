@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- 1. VALIDATE AND ASSIGN ARGUMENTS ---
-if [ "$#" -ne 3 ]; then
+if [ "$#" -ne 4 ]; then
     echo "Usage: $0 <output_dir> <dataset_cp_root> <dataset_no_cp_root> <nproc>"
     echo "Example: $0 results/ablation_study data/cp_dataset data/no_cp_dataset 2"
     exit 1
