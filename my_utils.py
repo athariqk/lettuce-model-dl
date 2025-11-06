@@ -261,6 +261,11 @@ def save_on_master(*args, **kwargs):
         torch.save(*args, **kwargs)
 
 
+def print_on_master(msg):
+    if is_main_process():
+        print(msg)
+
+
 def init_distributed_mode(args):
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         args.rank = int(os.environ["RANK"])

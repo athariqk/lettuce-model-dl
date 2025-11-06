@@ -134,6 +134,8 @@ def compute_validation_loss(model, data_loader, device, print_freq=100):
                 loss_components_acc.setdefault(k, 0.0)
                 loss_components_acc[k] += float(v.item()) * batch_size
 
+            metric_logger.update(loss=loss_value, **loss_dict_reduced)
+
     mean_loss = total_loss / total_items if total_items > 0 else float("nan")
     mean_components = {k: (v / total_items) for k, v in loss_components_acc.items()}
 
@@ -1112,9 +1114,10 @@ def args_sanity_check(args):
     if args.output_dir:
         utils.mkdir(args.output_dir)
 
-    print("--- Arguments ---")
-    pprint.pprint(vars(args))
-    print("-----------------")
+    utils.print_on_master("--- Arguments ---")
+    if utils.is_main_process():
+        pprint.pprint(vars(args))
+    utils.print_on_master("-----------------")
 
 
 def init_dist_args(args):
@@ -1133,7 +1136,7 @@ def run_single_seed(args, seed):
     Handles setup, calling the correct training loop, and post-run measurement.
     """
     if seed is not None:
-        print(f"Setting Seed: {seed}")
+        utils.print_on_master(f"Setting Seed: {seed}")
         set_seed(seed)
     
     run_tag = f"seed-{seed}" if seed is not None else "seed-none"
@@ -1150,29 +1153,29 @@ def run_single_seed(args, seed):
     # K-Fold has its own --resume-kfold flag, so this logic is for standard runs.
     if args.resume and not args.k_folds > 1:
         if os.path.exists(checkpoint_path):
-            print(f"Found checkpoint for seed {seed}: {checkpoint_path}")
+            utils.print_on_master(f"Found checkpoint for seed {seed}: {checkpoint_path}")
             try:
                 checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
                 last_epoch = checkpoint["epoch"]
                 
                 # Check if the run is already finished
                 if last_epoch == args.epochs - 1:
-                    print(f"Skipping Seed {seed}: Training already complete.")
+                    utils.print_on_master(f"Skipping Seed {seed}: Training already complete.")
                     # Try to load the final results if they exist
                     if os.path.exists(results_json_path):
-                        print("Loading saved results.")
+                        utils.print_on_master("Loading saved results.")
                         with open(results_json_path, "r") as f:
                             run_summary = json.load(f)
                     return run_summary # Skip this seed entirely
                 else:
                     # Run is incomplete, set the resume_path to continue
-                    print(f"Resuming Seed {seed} from Epoch {last_epoch + 1}")
+                    utils.print_on_master(f"Resuming Seed {seed} from Epoch {last_epoch + 1}")
                     args.resume_path = checkpoint_path # Pass the path to standard_training_impl
             
             except Exception as e:
-                print(f"Warning: Could not load checkpoint {checkpoint_path} for seed {seed}. Retrying from scratch. Error: {e}")
+                utils.print_on_master(f"Warning: Could not load checkpoint {checkpoint_path} for seed {seed}. Retrying from scratch. Error: {e}")
         else:
-            print(f"No checkpoint found for seed {seed}. Starting from scratch.")
+            utils.print_on_master(f"No checkpoint found for seed {seed}. Starting from scratch.")
 
     # Snapshot args
     snap = copy(vars(args))
@@ -1184,7 +1187,7 @@ def run_single_seed(args, seed):
     # --- Run core logic from original main() ---
     args_sanity_check(args)
     init_dist_args(args)
-    print("Loading data")
+    utils.print_on_master("Loading data")
     
     train_results = {}
     num_classes = 2 # Default, will be updated
@@ -1203,7 +1206,7 @@ def run_single_seed(args, seed):
             num_classes = train_results.get("num_classes", num_classes)
 
     except Exception as e:
-        print(f"!!! Training run for seed {seed} failed: {e} !!!")
+        utils.print_on_master(f"!!! Training run for seed {seed} failed: {e} !!!")
         import traceback
         traceback.print_exc()
         run_summary["error"] = str(e)
@@ -1211,7 +1214,7 @@ def run_single_seed(args, seed):
     # --- End core logic ---
 
     # --- Post-run measurement (param count & latency) ---
-    print("--- Post-Run Measurement ---")
+    utils.print_on_master("--- Post-Run Measurement ---")
     best_ckpt_path = run_summary.get("best_checkpoint")
     
     # Re-build model kwargs to instantiate model for measurement
@@ -1237,16 +1240,16 @@ def run_single_seed(args, seed):
         model_for_measure = get_model(args.model, num_classes=num_classes, **kwargs)
         param_count = count_parameters(model_for_measure)
         run_summary['param_count'] = int(param_count)
-        print(f"Model Parameters (trainable): {param_count}")
+        utils.print_on_master(f"Model Parameters (trainable): {param_count}")
 
         if best_ckpt_path and os.path.exists(best_ckpt_path):
-            print(f"Loading best checkpoint for measurement: {best_ckpt_path}")
+            utils.print_on_master(f"Loading best checkpoint for measurement: {best_ckpt_path}")
             chk = torch.load(best_ckpt_path, map_location="cpu", weights_only=False)
             model_for_measure.load_state_dict(chk["model"])
             if 'val_loss' in chk:
                 run_summary['val_loss'] = float(chk['val_loss'])
         elif args.k_folds <= 1:
-            print("Warning: No 'model_best_by_val.pth' found. Latency measurement will use initialized weights.")
+            utils.print_on_master("Warning: No 'model_best_by_val.pth' found. Latency measurement will use initialized weights.")
 
         if args.measure_latency and args.k_folds <= 1:
             ds_test, _ = get_dataset(is_train=False, args=args, no_transform=True)
@@ -1257,19 +1260,19 @@ def run_single_seed(args, seed):
             
             latency = measure_latency(model_for_measure, sample_img, device, warmup=args.latency_warmup, runs=args.latency_runs)
             run_summary['latency_ms'] = float(latency)
-            print(f"Model Latency: {latency:.3f} ms")
+            utils.print_on_master(f"Model Latency: {latency:.3f} ms")
         elif args.measure_latency and args.k_folds > 1:
-            print("Skipping latency measurement for K-Fold run (no single best model).")
+            utils.print_on_master("Skipping latency measurement for K-Fold run (no single best model).")
 
     except Exception as e:
-        print(f"Post-run measurement failed: {e}")
+        utils.print_on_master(f"Post-run measurement failed: {e}")
         run_summary["measurement_error"] = str(e)
 
     if args.save_metrics and utils.is_main_process():
         results_path = os.path.join(args.output_dir, "run_results.json")
         with open(results_path, "w") as f:
             json.dump(run_summary, f, indent=2, default=str)
-        print(f"Run summary saved to {results_path}")
+        utils.print_on_master(f"Run summary saved to {results_path}")
 
     return run_summary
 
@@ -1298,13 +1301,13 @@ def run_experiments(args):
         args_copy = copy(args)
         args_copy.output_dir = base_output_dir # Reset to base dir for each run
         
-        print(f"\n\n--- Running Experiment for Seed: {s} ---")
+        utils.print_on_master(f"\n\n--- Running Experiment for Seed: {s} ---")
         res = run_single_seed(args_copy, s)
         all_runs.append(res)
 
     # Aggregate results if multiple seeds
     if len(all_runs) > 1:
-        print("\n\n--- Aggregate Results ---")
+        utils.print_on_master("\n\n--- Aggregate Results ---")
         aggregate = {"runs": len(all_runs), "seeds": [r.get("seed") for r in all_runs]}
         lat_list = [r.get("latency_ms") for r in all_runs if r.get("latency_ms") is not None]
         p_list = [r.get("param_count") for r in all_runs if r.get("param_count") is not None]
@@ -1313,20 +1316,20 @@ def run_experiments(args):
         if lat_list:
             aggregate['latency_mean_ms'] = float(np.mean(lat_list))
             aggregate['latency_std_ms'] = float(np.std(lat_list))
-            print(f"Latency (ms): Mean={aggregate['latency_mean_ms']:.3f}, Std={aggregate['latency_std_ms']:.3f}")
+            utils.print_on_master(f"Latency (ms): Mean={aggregate['latency_mean_ms']:.3f}, Std={aggregate['latency_std_ms']:.3f}")
         if p_list:
             aggregate['param_count_mean'] = float(np.mean(p_list))
-            print(f"Param Count:  Mean={aggregate['param_count_mean']:.0f}")
+            utils.print_on_master(f"Param Count:  Mean={aggregate['param_count_mean']:.0f}")
         if val_list:
             aggregate['val_loss_mean'] = float(np.mean(val_list))
             aggregate['val_loss_std'] = float(np.std(val_list))
-            print(f"Val Loss:     Mean={aggregate['val_loss_mean']:.6f}, Std={aggregate['val_loss_std']:.6f}")
+            utils.print_on_master(f"Val Loss:     Mean={aggregate['val_loss_mean']:.6f}, Std={aggregate['val_loss_std']:.6f}")
 
         if utils.is_main_process():
             agg_path = os.path.join(base_output_dir, "aggregate_results.json")
             with open(agg_path, "w") as f:
                 json.dump({"aggregate": aggregate, "runs": all_runs}, f, indent=2, default=str)
-            print(f"Saved aggregate summary to {agg_path}")
+            utils.print_on_master(f"Saved aggregate summary to {agg_path}")
 
     return all_runs
 
@@ -1338,7 +1341,7 @@ def run_experiments(args):
 def main():
     args = get_args_parser().parse_args()
     run_experiments(args)
-    print("All runs complete.")
+    utils.print_on_master("All runs complete.")
 
 
 if __name__ == "__main__":
