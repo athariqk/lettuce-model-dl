@@ -2,8 +2,8 @@
 
 # --- 1. VALIDATE AND ASSIGN ARGUMENTS ---
 if [ "$#" -ne 3 ]; then
-    echo "Usage: $0 <output_dir> <dataset_cp_root> <dataset_no_cp_root>"
-    echo "Example: $0 results/ablation_study data/cp_dataset data/no_cp_dataset"
+    echo "Usage: $0 <output_dir> <dataset_cp_root> <dataset_no_cp_root> <nproc>"
+    echo "Example: $0 results/ablation_study data/cp_dataset data/no_cp_dataset 2"
     exit 1
 fi
 
@@ -11,6 +11,7 @@ fi
 OUTPUT_DIR="$1"
 DATASET_CP_ROOT="$2"
 DATASET_NO_CP_ROOT="$3"
+NPROC="$4"
 
 echo "--- Configuration ---"
 echo "Base Output Dir: $OUTPUT_DIR"
@@ -47,7 +48,7 @@ for model in "${models[@]}"; do
             # We create the directory just in case
             mkdir -p "$full_output_path"
             
-            torchrun --nproc_per_node=2 train.py \
+            torchrun --nproc_per_node="$NPROC" train.py \
                 --data-path "$data_path" \
                 --dataset lettuce_rgbd \
                 --model "$model" \
