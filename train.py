@@ -297,7 +297,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--lr-gamma", default=0.1, type=float)
     parser.add_argument("--print-freq", default=20, type=int)
     parser.add_argument("--output-dir", default=".", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--resume-path", default="", type=str, help="Path to specific checkpoint file for resuming a single run.")
+    parser.add_argument("--resume", action="store_true", help="Automatically resume multi-seed runs from the last checkpoint.")
     parser.add_argument("--resume-kfold", action="store_true", help="Resume K-Fold training.")
     parser.add_argument("--start_epoch", default=0, type=int)
     parser.add_argument("--aspect-ratio-group-factor", default=3, type=int)
@@ -979,9 +980,9 @@ def standard_training_impl(args):
         dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers,
         collate_fn=utils.collate_fn) # Note: was train_collate_fn in original, fixed to utils.collate_fn
 
-    # --- Resume logic (from train_original.py) ---
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+    if args.resume_path:
+        print(f"--- Resuming from specific path: {args.resume_path} ---")
+        checkpoint = torch.load(args.resume_path, map_location="cpu", weights_only=False)
         model_without_ddp.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
@@ -1132,7 +1133,7 @@ def run_single_seed(args, seed):
     Handles setup, calling the correct training loop, and post-run measurement.
     """
     if seed is not None:
-        print(f"\n--- Setting Seed: {seed} ---")
+        print(f"Setting Seed: {seed}")
         set_seed(seed)
     
     run_tag = f"seed-{seed}" if seed is not None else "seed-none"
@@ -1141,6 +1142,37 @@ def run_single_seed(args, seed):
     
     # CRITICAL: Set args.output_dir to the seed-specific path
     args.output_dir = run_output
+
+    run_summary = {"seed": seed, "output_dir": args.output_dir}
+    checkpoint_path = os.path.join(run_output, "checkpoint.pth")
+    results_json_path = os.path.join(run_output, "run_results.json")
+
+    # K-Fold has its own --resume-kfold flag, so this logic is for standard runs.
+    if args.resume and not args.k_folds > 1:
+        if os.path.exists(checkpoint_path):
+            print(f"Found checkpoint for seed {seed}: {checkpoint_path}")
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+                last_epoch = checkpoint["epoch"]
+                
+                # Check if the run is already finished
+                if last_epoch == args.epochs - 1:
+                    print(f"Skipping Seed {seed}: Training already complete.")
+                    # Try to load the final results if they exist
+                    if os.path.exists(results_json_path):
+                        print("Loading saved results.")
+                        with open(results_json_path, "r") as f:
+                            run_summary = json.load(f)
+                    return run_summary # Skip this seed entirely
+                else:
+                    # Run is incomplete, set the resume_path to continue
+                    print(f"Resuming Seed {seed} from Epoch {last_epoch + 1}")
+                    args.resume_path = checkpoint_path # Pass the path to standard_training_impl
+            
+            except Exception as e:
+                print(f"Warning: Could not load checkpoint {checkpoint_path} for seed {seed}. Retrying from scratch. Error: {e}")
+        else:
+            print(f"No checkpoint found for seed {seed}. Starting from scratch.")
 
     # Snapshot args
     snap = copy(vars(args))
@@ -1154,7 +1186,6 @@ def run_single_seed(args, seed):
     init_dist_args(args)
     print("Loading data")
     
-    run_summary = {"seed": seed, "output_dir": args.output_dir}
     train_results = {}
     num_classes = 2 # Default, will be updated
 
@@ -1267,13 +1298,13 @@ def run_experiments(args):
         args_copy = copy(args)
         args_copy.output_dir = base_output_dir # Reset to base dir for each run
         
-        print(f"\n--- Running Experiment for Seed: {s} ---")
+        print(f"\n\n--- Running Experiment for Seed: {s} ---")
         res = run_single_seed(args_copy, s)
         all_runs.append(res)
 
     # Aggregate results if multiple seeds
     if len(all_runs) > 1:
-        print("\n--- Aggregate Results ---")
+        print("\n\n--- Aggregate Results ---")
         aggregate = {"runs": len(all_runs), "seeds": [r.get("seed") for r in all_runs]}
         lat_list = [r.get("latency_ms") for r in all_runs if r.get("latency_ms") is not None]
         p_list = [r.get("param_count") for r in all_runs if r.get("param_count") is not None]
