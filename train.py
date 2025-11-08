@@ -188,6 +188,32 @@ def get_eval_metrics_dict(evaluator: CocoEvaluator) -> dict:
             )
     return eval_metrics_dict
 
+
+def _safe_load_json(path: str):
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _normalize_epoch_keys(d: dict) -> dict:
+    """JSON makes dict keys strings; convert epoch keys back to int."""
+    out = {}
+    for k, v in (d or {}).items():
+        try:
+            out[int(k)] = v
+        except Exception:
+            # if key isn't an int, keep as-is (unlikely)
+            out[k] = v
+    return out
+
+
+def _dump_epoch_dict_sorted(d: dict) -> dict:
+    """Convert epoch keys to str and sort for stable JSON."""
+    return {str(k): d[k] for k in sorted(d.keys())}
+
+
 # ------------------------------------------------------------
 # Core data/model utilities (from train_original.py)
 # ------------------------------------------------------------
@@ -625,6 +651,23 @@ def k_fold_training(args, num_classes, full_dataset):
         val_history = {}
         # --- End Setup ---
 
+        # If resuming this fold, load and preserve previous val_history and best
+        if args.resume_kfold and args.start_epoch > 0 and utils.is_main_process():
+            hist_path = os.path.join(current_fold_output_dir, "val_loss_history.json")
+            prev_hist = _safe_load_json(hist_path)
+            prev_hist = _normalize_epoch_keys(prev_hist) if prev_hist else {}
+            if prev_hist:
+                val_history.update(prev_hist)
+                # recompute best from previous
+                for ep, rec in prev_hist.items():
+                    vl = rec.get("val_loss", float("nan"))
+                    try:
+                        vl = float(vl)
+                    except Exception:
+                        vl = float("nan")
+                    if not np.isnan(vl) and vl < best_val_loss:
+                        best_val_loss, best_epoch = vl, ep
+
         print(f"Start training for Fold {fold + 1}")
         start_time = time.time()
         last_epoch_evaluator = None
@@ -717,7 +760,7 @@ def k_fold_training(args, num_classes, full_dataset):
         if utils.is_main_process():
             csv_file.close()
             with open(os.path.join(current_fold_output_dir, "val_loss_history.json"), "w") as f:
-                json.dump(val_history, f, indent=2)
+                json.dump(_dump_epoch_dict_sorted(val_history), f, indent=2)
 
         # --- Post-Fold Summary
         if last_epoch_evaluator and args.output_dir:
@@ -1031,6 +1074,22 @@ def standard_training_impl(args):
     val_history = {}
     # --- End Setup ---
 
+    # If resuming, load and preserve prior val_history and best
+    if args.resume_path and args.start_epoch > 0 and args.output_dir and utils.is_main_process():
+        hist_path = os.path.join(args.output_dir, "val_loss_history.json")
+        prev_hist = _safe_load_json(hist_path)
+        prev_hist = _normalize_epoch_keys(prev_hist) if prev_hist else {}
+        if prev_hist:
+            val_history.update(prev_hist)
+            for ep, rec in prev_hist.items():
+                vl = rec.get("val_loss", float("nan"))
+                try:
+                    vl = float(vl)
+                except Exception:
+                    vl = float("nan")
+                if not np.isnan(vl) and vl < best_val_loss:
+                    best_val_loss, best_epoch = vl, ep
+
     print("Starting standard training (K-Fold is disabled or k_folds <= 1).")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -1109,7 +1168,7 @@ def standard_training_impl(args):
     if utils.is_main_process():
         csv_file.close()
         with open(os.path.join(args.output_dir, "val_loss_history.json"), "w") as f:
-            json.dump(val_history, f, indent=2)
+            json.dump(_dump_epoch_dict_sorted(val_history), f, indent=2)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -1311,8 +1370,18 @@ def main():
     # --- 10. Save Final Results (only main process) ---
     if args.save_metrics and utils.is_main_process():
         results_path = os.path.join(args.output_dir, "run_results.json")
+        # Merge with existing results to preserve history across resumes
+        existing = _safe_load_json(results_path) or {}
+        # Merge val_history specifically (epoch-wise)
+        merged_hist = {}
+        for src in (existing.get("val_history", {}), run_summary.get("val_history", {})):
+            for k, v in (_normalize_epoch_keys(src) or {}).items():
+                merged_hist[k] = v
+        merged = {**existing, **run_summary}
+        if merged_hist:
+            merged["val_history"] = _dump_epoch_dict_sorted(merged_hist)
         with open(results_path, "w") as f:
-            json.dump(run_summary, f, indent=2, default=str)
+            json.dump(merged, f, indent=2, default=str)
         print(f"Run summary saved to {results_path}")
     
     print("All runs complete.")
