@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # --- 1. VALIDATE AND ASSIGN ARGUMENTS ---
-if [ "$#" -ne 4 ]; then
-    echo "Usage: $0 <output_dir> <dataset_cp_root> <dataset_no_cp_root> <nproc>"
-    echo "Example: $0 results/ablation_study data/cp_dataset data/no_cp_dataset 2"
+if [ "$#" -ne 5 ]; then
+    echo "Usage: $0 <output_dir> <dataset_cp_root> <dataset_no_cp_root> <nproc> <gamma>"
+    echo "Example: $0 results/ablation_study data/cp_dataset data/no_cp_dataset 2 0.3"
     exit 1
 fi
 
@@ -12,6 +12,7 @@ OUTPUT_DIR="$1"
 DATASET_CP_ROOT="$2"
 DATASET_NO_CP_ROOT="$3"
 NPROC="$4"
+GAMMA="$5"
 
 echo "--- Configuration ---"
 echo "Base Output Dir: $OUTPUT_DIR"
@@ -23,7 +24,7 @@ echo "---------------------"
 # --- 2. DEFINE EXPERIMENT ARRAYS ---
 models=("lettuce_model" "lettuce_model_multimodal" "lettuce_model_mobnetv3" "lettuce_model_multimodal_mobnetv3")
 data_paths=("$DATASET_CP_ROOT" "$DATASET_NO_CP_ROOT")
-seeds=(42 77 123 2003)
+seeds=(42)
 
 # --- 3. RUN EXPERIMENT LOOP ---
 for model in "${models[@]}"; do
@@ -64,7 +65,7 @@ for model in "${models[@]}"; do
                 --output-dir "$full_output_path" \
                 --trainable-backbone-layers 2 \
                 --k-folds 0 \
-                --phenotype-loss-weight 0.1 \
+                --phenotype-loss-weight "$GAMMA" \
                 --phenotype-names fresh_weight \
                 --seed "$seed" \
                 --save-metrics \

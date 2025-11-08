@@ -18,52 +18,51 @@ seeds=(42)
 
 # --- 3. RUN EXPERIMENT LOOP ---
 for gamma in "${gammas[@]}"; do
-        for seed in "${seeds[@]}"; do
-            
-            # Extract the base name of the data path for the output directory name
-            data_basename=$(basename "$DATASET_ROOT")
+    for seed in "${seeds[@]}"; do
+        
+        # Extract the base name of the data path for the output directory name
+        data_basename=$(basename "$DATASET_ROOT")
 
-            # Construct the output directory name
-            output_subdir="${gamma}_${data_basename}"
+        # Construct the output directory name
+        output_subdir="${gamma}_${data_basename}"
 
-            # Construct the full output path
-            # Note: Your train.py script expects the seed *in* the output path
-            # but also takes a --seed argument. This matches your Python logic.
-            full_output_path="${OUTPUT_DIR}/${output_subdir}/seed-${seed}"
+        # Construct the full output path
+        # Note: Your train.py script expects the seed *in* the output path
+        # but also takes a --seed argument. This matches your Python logic.
+        full_output_path="${OUTPUT_DIR}/${output_subdir}/seed-${seed}"
 
-            echo "Running experiment with gamma: $gamma and data path: $DATASET_ROOT"
-            echo "Output will be saved to: $full_output_path"
+        echo "Running experiment with gamma: $gamma and data path: $DATASET_ROOT"
+        echo "Output will be saved to: $full_output_path"
 
-            # Run the training script
-            # We create the directory just in case
-            mkdir -p "$full_output_path"
-            
-            torchrun --nproc_per_node="$NPROC" train.py \
-                --data-path "$DATASET_ROOT" \
-                --dataset lettuce_rgbd \
-                --model lettuce_model \
-                --epochs 50 \
-                --aspect-ratio-group-factor 3 \
-                --opt adamw \
-                --lr-scheduler cosineannealinglr \
-                --lr 0.001 \
-                --batch-size 32 \
-                --weight-decay 0.05 \
-                --data-augmentation lettuce_rgbd \
-                --use-v2 \
-                --output-dir "$full_output_path" \
-                --trainable-backbone-layers 2 \
-                --k-folds 0 \
-                --phenotype-loss-weight "$gamma" \
-                --phenotype-names fresh_weight \
-                --seed "$seed" \
-                --save-metrics \
-                --measure-latency \
-                --resume
+        # Run the training script
+        # We create the directory just in case
+        mkdir -p "$full_output_path"
+        
+        torchrun --nproc_per_node="$NPROC" train.py \
+            --data-path "$DATASET_ROOT" \
+            --dataset lettuce_rgbd \
+            --model lettuce_model \
+            --epochs 50 \
+            --aspect-ratio-group-factor 3 \
+            --opt adamw \
+            --lr-scheduler cosineannealinglr \
+            --lr 0.001 \
+            --batch-size 32 \
+            --weight-decay 0.05 \
+            --data-augmentation lettuce_rgbd \
+            --use-v2 \
+            --output-dir "$full_output_path" \
+            --trainable-backbone-layers 2 \
+            --k-folds 0 \
+            --phenotype-loss-weight "$gamma" \
+            --phenotype-names fresh_weight \
+            --seed "$seed" \
+            --save-metrics \
+            --measure-latency \
+            --resume
 
-            echo "Finished experiment with gamma: $gamma, data path: $DATASET_ROOT and seed $seed"
-            echo "--------------------------------------------------"
-        done
+        echo "Finished experiment with gamma: $gamma, data path: $DATASET_ROOT and seed $seed"
+        echo "--------------------------------------------------"
     done
 done
 

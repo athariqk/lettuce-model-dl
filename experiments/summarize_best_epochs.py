@@ -171,7 +171,7 @@ def print_results_table(all_results: List[Dict[str, Any]]):
 
     print("\n--- Model Summary (from seed-42) ---")
 
-    headers = ["Model", "AP50:95", "AR50:95", "R2", "MAPE", "RMSE", "params", "latency"]
+    headers = ["Model", "AP50:95", "AR50:95", "R2", "RMSE", "MAPE", "params", "latency"]
     
     # Determine column widths
     col_widths = {h: len(h) for h in headers}
@@ -216,6 +216,11 @@ def main():
         'lettuce_model_dataset_no_copypaste': 'MobileViTv2',
         'lettuce_model_multimodal_mobnetv3_dataset_no_copypaste': 'Baseline + DF',
         'lettuce_model_mobnetv3_dataset_no_copypaste': 'Baseline',
+        # "0.1": "0.1",
+        # "0.3": "0.3",
+        # "0.5": "0.5",
+        # "0.7": "0.7",
+        # "0.9": "0.9"
     }
 
     if not os.path.isdir(args.base_dir):
