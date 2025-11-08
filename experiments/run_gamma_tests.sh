@@ -24,7 +24,7 @@ for gamma in "${gammas[@]}"; do
             data_basename=$(basename "$DATASET_ROOT")
 
             # Construct the output directory name
-            output_subdir="${gamma}_${DATASET_ROOT}"
+            output_subdir="${gamma}_${data_basename}"
 
             # Construct the full output path
             # Note: Your train.py script expects the seed *in* the output path
