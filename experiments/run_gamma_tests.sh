@@ -14,7 +14,7 @@ NPROC="$3"
 
 # --- 2. DEFINE EXPERIMENT ARRAYS ---
 gammas=(0.1 0.3 0.5 0.7 0.9)
-seeds=(42 77 123)
+seeds=(42)
 
 # --- 3. RUN EXPERIMENT LOOP ---
 for gamma in "${gammas[@]}"; do
