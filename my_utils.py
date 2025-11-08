@@ -286,14 +286,14 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
 
     # Guard against process group re-initialization
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
+    if is_dist_avail_and_initialized():
         print("Distributed process group already initialized. Skipping.")
         return
 
     torch.cuda.set_device(args.gpu)
     print(f"| distributed init (rank {args.rank}): init_method=env://", flush=True)
     torch.distributed.init_process_group(
-        backend=args.dist_backend, world_size=args.world_size, rank=args.rank
+        backend=args.dist_backend, world_size=args.world_size, rank=args.rank, device_id=args.gpu
     )
     torch.distributed.barrier()
 
