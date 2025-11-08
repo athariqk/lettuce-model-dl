@@ -290,10 +290,11 @@ def init_distributed_mode(args):
         print("Distributed process group already initialized. Skipping.")
         return
 
+    device = torch.device(f"{args.device}:{args.rank}")
     torch.cuda.set_device(args.gpu)
     print(f"| distributed init (rank {args.rank}): init_method=env://", flush=True)
     torch.distributed.init_process_group(
-        backend=args.dist_backend, world_size=args.world_size, rank=args.rank, device_id=torch.device(args.device)
+        backend=args.dist_backend, world_size=args.world_size, rank=args.rank, device_id=device
     )
     torch.distributed.barrier()
 
