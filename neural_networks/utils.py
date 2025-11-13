@@ -65,3 +65,42 @@ def get_model(name: str, **kwargs) -> nn.Module:
     model.eval()
 
     return model
+
+
+def list_to_tensor_stack(tensor_list: List[torch.Tensor]) -> torch.Tensor:
+    """
+    Converts a list of tensors into a single tensor by stacking them along a new
+    first dimension. All tensors in the list must have the same shape.
+
+    Args:
+        tensor_list (List[torch.Tensor]): A list of PyTorch tensors.
+                                          All tensors must have the same shape.
+
+    Returns:
+        torch.Tensor: A single tensor where the first dimension is N (the
+                      number of tensors in the input list), and the subsequent
+                      dimensions match the shape of the individual input tensors.
+                      Shape: [N, *tensor_list[0].shape].
+
+    Raises:
+        ValueError: If the input list is empty or if tensors in the list
+                    do not all have the same shape.
+    """
+    if not tensor_list:
+        raise ValueError("Input tensor_list cannot be empty for stacking.")
+
+    # Check if all tensors have the same shape
+    # (torch.stack will also raise an error, but this gives a clearer message)
+    first_tensor_shape = tensor_list[0].shape
+    for i, tensor in enumerate(tensor_list[1:], start=1): # Start enumeration from 1 for message
+        if tensor.shape != first_tensor_shape:
+            raise ValueError(
+                f"All tensors in the list must have the same shape. "
+                f"Shape of tensor at index 0: {first_tensor_shape}, "
+                f"but shape of tensor at index {i}: {tensor.shape}"
+            )
+
+    # Stack the tensors along a new dimension (dim=0 makes N the first dimension)
+    # The resulting tensor will have shape [N, original_dim1, original_dim2, ...]
+    stacked_tensor = torch.stack(tensor_list, dim=0)
+    return stacked_tensor

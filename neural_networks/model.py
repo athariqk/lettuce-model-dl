@@ -31,6 +31,7 @@ from my_utils import ROOT_DIR
 from neural_networks.blocks import AFF
 from custom_types import DualTensor
 from neural_networks.head import SSDLitePhenotypeHead
+from neural_networks.anchors import DefaultBoxGenerator as CustomDefaultBoxGenerator
 
 
 class HeadOutputs(NamedTuple):
@@ -125,11 +126,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
         if maximums is not None:
             self.register_buffer("maximums", torch.Tensor(maximums).unsqueeze(0))
 
-        self.anchor_generator = DefaultBoxGenerator(
-            aspect_ratios, min_ratio=0.1, max_ratio=1.05
-        )
-
         if prepostprocessing:
+            self.anchor_generator = DefaultBoxGenerator(
+                aspect_ratios, min_ratio=0.1, max_ratio=1.05
+            )
             self.proposal_matcher = SSDMatcher(iou_thresh)
             self.box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
 
@@ -141,6 +141,10 @@ class Modified_SSDLiteMobileViT(nn.Module):
 
             self.neg_to_pos_ratio = 3
             self.label_smoothing = 0.3
+        else:
+            self.anchor_generator = CustomDefaultBoxGenerator(
+                aspect_ratios, min_ratio=0.1, max_ratio=1.05
+            )
 
         self.phenotype_loss_weight = phenotype_loss_weight
         self.multimodal = multimodal
@@ -351,6 +355,7 @@ class Modified_SSDLiteMobileViT(nn.Module):
         """
 
         if not self.prepostprocessing and isinstance(images, Tensor):
+            # Expected input shape is [2, B, C, H, W]
             x, y = images.unbind()
 
             if self.multimodal:
