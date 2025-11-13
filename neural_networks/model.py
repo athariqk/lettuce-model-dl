@@ -30,15 +30,9 @@ from torchvision.models.detection.ssd import SSD
 from my_utils import ROOT_DIR
 from neural_networks.blocks import AFF
 from custom_types import DualTensor
+from neural_networks.custom_types import HeadOutputs
 from neural_networks.head import SSDLitePhenotypeHead
 from neural_networks.anchors import DefaultBoxGenerator as CustomDefaultBoxGenerator
-
-
-class HeadOutputs(NamedTuple):
-    cls_logits: torch.Tensor  # Expected shape: [B, N, NumClasses]
-    bbox_regression: torch.Tensor  # Expected shape: [B, N, 4]
-    phenotypes_pred: torch.Tensor  # Expected shape: [B, N, NumPhenotypes]
-    anchors: torch.Tensor  # Expected shape: [N, A]
 
 
 class Modified_SSDLiteMobileViT(nn.Module):

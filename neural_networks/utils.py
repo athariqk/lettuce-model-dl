@@ -1,6 +1,11 @@
-from typing import List, OrderedDict, Tuple
+from typing import Dict, List, OrderedDict, Tuple
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torchvision.models.detection._utils import _topk_min
+from torchvision.ops import boxes as box_ops
+
+from neural_networks.custom_types import HeadOutputs
 
 
 def retrieve_out_channels(
@@ -65,6 +70,75 @@ def get_model(name: str, **kwargs) -> nn.Module:
     model.eval()
 
     return model
+
+
+def postprocess_lettuce_detections(
+        head_outputs: HeadOutputs,
+        image_shapes: List[Tuple[int, int]],
+        box_coder,
+        score_thresh,
+        phenotype_stds,
+        phenotype_means,
+        topk_candidates=400,
+        detections_per_img: int = 200,
+        nms_thresh: float = 0.5,
+) -> List[Dict[str, torch.Tensor]]:
+    bbox_regression = head_outputs.bbox_regression
+    pred_scores = F.softmax(head_outputs.cls_logits, dim=-1)
+    phenotypes_pred = head_outputs.phenotypes_pred
+    image_anchors = head_outputs.anchors
+
+    num_classes = pred_scores.size(-1)
+    device = pred_scores.device
+
+    detections: List[Dict[str, torch.Tensor]] = []
+
+    for boxes, scores, phenotypes, anchors, image_shape in zip(bbox_regression, pred_scores, phenotypes_pred,
+                                                               image_anchors, image_shapes):
+        boxes = box_coder.decode_single(boxes, anchors)
+        boxes = box_ops.clip_boxes_to_image(boxes, image_shape)
+
+        image_boxes = []
+        image_scores = []
+        image_labels = []
+        image_phenotypes = []
+        for label in range(1, num_classes):
+            score = scores[:, label]
+
+            keep_idxs = score > score_thresh
+            score = score[keep_idxs]
+            box = boxes[keep_idxs]
+            phenotype = phenotypes[keep_idxs]
+
+            # keep only topk scoring predictions
+            num_topk = _topk_min(score, topk_candidates, 0)
+            score, idxs = score.topk(num_topk)
+            box = box[idxs]
+            phenotype = (phenotype[idxs] * phenotype_stds) + phenotype_means  # denormalize
+
+            image_boxes.append(box)
+            image_scores.append(score)
+            image_labels.append(torch.full_like(score, fill_value=label, dtype=torch.int64, device=device))
+            image_phenotypes.append(phenotype)
+
+        image_boxes = torch.cat(image_boxes, dim=0)
+        image_scores = torch.cat(image_scores, dim=0)
+        image_labels = torch.cat(image_labels, dim=0)
+        image_phenotypes = torch.cat(image_phenotypes, dim=0)
+
+        # non-maximum suppression
+        keep = box_ops.batched_nms(image_boxes, image_scores, image_labels, nms_thresh)
+        keep = keep[: detections_per_img]
+
+        detections.append(
+            {
+                "boxes": image_boxes[keep],
+                "scores": image_scores[keep],
+                "labels": image_labels[keep],
+                "phenotypes": image_phenotypes[keep]
+            }
+        )
+    return detections
 
 
 def list_to_tensor_stack(tensor_list: List[torch.Tensor]) -> torch.Tensor:
