@@ -1,7 +1,7 @@
 import argparse
 import glob
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import numpy as np
 import torch
 import torchvision.transforms as transforms
@@ -16,7 +16,9 @@ from torchvision.transforms import functional as F_vision
 from torch.nn import functional as F
 from torch import nn
 
-from neural_networks import lettuce_model
+from custom_types import DualTensor
+from neural_networks import lettuce_model, lettuce_model_multimodal
+
 
 def get_arguments():
     parser = argparse.ArgumentParser(description="SSDLite-MobileViT Inference")
@@ -24,6 +26,7 @@ def get_arguments():
     parser.add_argument("--weights", type=str, help="Path to the weights to load")
     parser.add_argument("--config-file", type=str, help="Path to configuration file")
     parser.add_argument("--image-path", type=str, required=True, help="Path to input image")
+    parser.add_argument("--depth-path", type=str, required=False, help="Path to input image")
     parser.add_argument("--output-dir", type=str, default="outputs", help="Directory to save outputs")
     parser.add_argument("--conf-threshold", type=float, default=0.5, help="Confidence threshold")
     parser.add_argument("--lettuce-model", action="store_true")
@@ -371,20 +374,23 @@ def predict_image(image_fname, **kwargs):
             orig_w=orig_w,
         )
 
-def predict_image_2(model, device, image_path):
-    image = Image.open(image_path).convert('RGB')
-    orig_w, orig_h = image.size
+def predict_image_2(model, device, image_path: Tuple[str, str]):
+    image = Image.open(image_path[0]).convert('RGB')
     transform = transforms.Compose([
         transforms.ToTensor(),
     ])
-    input_tensor = transform(image).unsqueeze(0)
-    input_tensor = input_tensor.to(device)
+    image_tensor = transform(image)
+    depth_tensor = torch.zeros(image_tensor.shape)
+    if image_path[1]:
+        depth = Image.open(image_path[1]).convert('RGB')
+        depth_tensor = transform(depth)
+    input_tensor = DualTensor(image_tensor, depth_tensor)
 
     with torch.no_grad():
         detections = model(input_tensor)
 
     # Load the image using OpenCV for visualization
-    image_cv = cv2.imread(image_path)
+    image_cv = cv2.imread(image_path[0])
     image_cv = cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
 
     # Create figure and axis
@@ -399,7 +405,7 @@ def predict_image_2(model, device, image_path):
         phenotypes = detection_pred["phenotypes"].cpu().numpy()
 
         for box, score, label, phenotype in zip(boxes, scores, labels, phenotypes):
-            if score < 0.5:
+            if score < 0.6:
                 continue
 
             x_min, y_min, x_max, y_max = box
@@ -417,7 +423,7 @@ def predict_image_2(model, device, image_path):
 
             # Class name and confidence
             class_name = coco_names[int(label)] if not args.lettuce_model else lettuce_names[int(label)]
-            text = f"{class_name}: {score:.2f}\nfw: {phenotype[0]:.2f}\nh: {phenotype[1]:.2f}"
+            text = f"selada: {score:.2f}\nfw: {phenotype[0]:.2f}\nh: {phenotype[1]:.2f}"
             plt.text(
                 x_min, y_min - 5, text,
                 fontsize=8, color='white',
@@ -434,7 +440,10 @@ def main(args):
     # model = ssdlite320_mobilenet_v3_large(weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT)
     # checkpoint = torch.load("model_95.pth", map_location=torch.device('cpu'), weights_only=False)
     # model.load_state_dict(checkpoint["model"])
-    model = lettuce_model()
+    if args.depth_path is None:
+        model = lettuce_model(log_transform=True)
+    else:
+        model = lettuce_model_multimodal(log_transform=True)
     weights = torch.load(args.weights, map_location="cpu", weights_only=False)["model"]
     model.load_state_dict(weights)
     model.to(device)
@@ -443,9 +452,12 @@ def main(args):
     if os.path.isdir(args.image_path):
         files = glob.glob(f"{args.image_path}/*.*")
         for file in files:
-            predict_image_2(model, device, file)
+            if "depth" in file:
+                continue
+            predict_image_2(model, device, (file, ""))
     else:
-        predict_image_2(model, device, args.image_path)
+        image_path = (args.image_path, args.depth_path)
+        predict_image_2(model, device, image_path)
 
 def main2(args):
     predict_image(args.image_path)

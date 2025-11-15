@@ -1,0 +1,29 @@
+LOCAL NON-DISTRIBUTED
+python train.py --data-path data\lettuce --dataset lettuce --model lettuce_model --epochs 200 --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009 --batch-size 24 --weight-decay 0.05 --data-augmentation ssd --use-v2 --output-dir runs\
+
+COLAB NON-DISTRIBUTED
+!python train.py\
+    --data-path {lettuce_root} --dataset lettuce --model lettuce_model --epochs 200\
+    --aspect-ratio-group-factor 3 --opt adamw --lr-scheduler cosineannealinglr --lr 0.00009 --batch-size 24\
+    --weight-decay 0.05 --data-augmentation ssd --use-v2 --output-dir /content/drive/MyDrive/Skripsi/runs5\
+
+DISTRIBUTED
+torchrun --nproc_per_node=8 train.py --dataset coco --model modified_ssdlite_mobilevit --epochs 660 --aspect-ratio-group-factor 3 --lr-scheduler cosineannealinglr --lr 0.15 --batch-size 34 --weight-decay 0.00004 --data-augmentation ssd
+
+ --ann-file instances_val.json --epoch 12 --batch-size 11 --rgb-image-subfolder val/rgb --depth-image-subfolder val/depth
+
+ --phenotype-means
+116.195183
+12.328637
+--phenotype-stds
+109.684213
+4.774079
+--boxcox-lambdas
+0.278228
+0.235918
+--minimums
+1.4
+5.0
+--maximums
+459.7
+25

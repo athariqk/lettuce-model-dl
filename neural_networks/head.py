@@ -1,4 +1,4 @@
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Tuple
 from torch import Tensor
 import torch.nn as nn
 from torchvision.models.detection.ssdlite import (
@@ -22,18 +22,17 @@ class ModifiedSSDLiteHead(nn.Module):
         self.regression_head = SSDLiteRegressionHead(in_channels, num_anchors, norm_layer)
         self.phenotype_head = SSDLitePhenotypeHead(in_channels, num_anchors, norm_layer)
 
-    def forward(self, x: List[Tensor]) -> Dict[str, Tensor]:
-        return {
-            "bbox_regression": self.regression_head(x),
-            "cls_logits": self.classification_head(x),
-            "phenotype_regression": self.phenotype_head(x),
-        }
+    def forward(self, x: List[Tensor]) -> Tuple[Tensor, Tensor, Tensor]:
+        bbox_regression = self.regression_head(x)
+        cls_logits = self.classification_head(x)
+        phenotype_regression = self.phenotype_head(x)
+        return bbox_regression, cls_logits, phenotype_regression
 
 
 class SSDLitePhenotypeHead(SSDScoringHead):
     def __init__(self, in_channels: List[int], num_anchors: List[int], norm_layer: Callable[..., nn.Module]):
         phenotype_reg = nn.ModuleList()
         for channels, anchors in zip(in_channels, num_anchors):
-            phenotype_reg.append(_prediction_block(channels, 2 * anchors, 3, norm_layer))
+            phenotype_reg.append(_prediction_block(channels, 1 * anchors, 3, norm_layer))
         _normal_init(phenotype_reg)
-        super().__init__(phenotype_reg, 2)
+        super().__init__(phenotype_reg, 1)

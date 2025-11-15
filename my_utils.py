@@ -261,6 +261,12 @@ def save_on_master(*args, **kwargs):
         torch.save(*args, **kwargs)
 
 
+def print_on_master(msg):
+    """Explicit helper to print only on the main process."""
+    if is_main_process():
+        print(msg)
+
+
 def init_distributed_mode(args):
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         args.rank = int(os.environ["RANK"])
@@ -275,12 +281,20 @@ def init_distributed_mode(args):
         return
 
     args.distributed = True
-
-    torch.cuda.set_device(args.gpu)
     args.dist_backend = "nccl"
-    print(f"| distributed init (rank {args.rank}): {args.dist_url}", flush=True)
+
+    setup_for_distributed(args.rank == 0)
+
+    # Guard against process group re-initialization
+    if is_dist_avail_and_initialized():
+        print("Distributed process group already initialized. Skipping.")
+        return
+
+    device = torch.device(f"{args.device}:{args.rank}")
+    torch.cuda.set_device(args.gpu)
+    print(f"| distributed init (rank {args.rank}): init_method=env://", flush=True)
     torch.distributed.init_process_group(
-        backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank
+        backend=args.dist_backend, world_size=args.world_size, rank=args.rank, device_id=device
     )
     torch.distributed.barrier()
-    setup_for_distributed(args.rank == 0)
+
